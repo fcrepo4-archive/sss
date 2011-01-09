@@ -1,0 +1,234 @@
+=======================================================================
+= SSS - Simple SWORD Server
+=======================================================================
+= Author: Richard Jones
+=======================================================================
+
+Requests to the server with CURL
+================================
+
+FIXME: we need to include Basic Authentication accross the board in these tests
+
+Notice that for POST and PUT requests we use HTTP 1.0 for the curl requests.  This is because the CherryPy web server
+which SSS operates under natively doesn't properly respond to those requests (although the functionality of the server
+is unaffected).  You may find that programming against the SSS will require you to explicitly use HTTP 1.0 - this should
+NOT be considered a requirement for SWORD 2.0.
+
+Get the Service Document
+------------------------
+
+HTTP: GET on SD-URI
+
+curl -i http://localhost:8080/sd-uri
+    This returns the Service Document with the configured number of collections listed
+
+FIXME: we need to include an X-On-Behalf-Of example here
+curl -i -H "X-On-Behalf-Of: obo" http://localhost:8080/sd-uri
+
+Deposit some new content
+------------------------
+
+HTTP: POST on Col-URI
+
+curl -i --http1.0 --data-binary "@example.zip"
+    -H "Content-Disposition: filename=example.zip"
+    -H "Content-Type: application/zip"
+    -H "X-Packaging: http://purl.org/net/sword-types/METSDSpaceSIP"
+    [Col-URI]
+
+This posts the example.zip file to the Col-URI with the filename "example.zip", and specifying that it is a zip
+file with the METSDSpaceSIP package format.  Col-URI should be obtained from the Service Document.
+
+This should return an HTTP status of 201 Created, and a Deposit Receipt
+
+curl -i --http1.0 --data-binary "@example.zip"
+    -H "Content-Disposition: filename=example.zip"
+    -H "Content-Type: application/zip"
+    -H "X-Packaging: http://purl.org/net/sword-types/METSDSpaceSIP"
+    -H "X-In-Progress: true"
+    [Col-URI]
+
+This should return an HTTP status of 202 Accepted, and a Deposit Receipt
+
+curl -i --http1.0 --data-binary "@multipart.dat"
+    -H 'Content-Type: multipart/related; boundary="===============0670350989=="'
+    -H "MIME-Version: 1.0"
+    -H "X-Packaging: http://purl.org/net/sword-types/METSDSpaceSIP"
+    [Col-URI]
+
+This will mimic an Atom Multipart deposit and will create two items in the container: atom.xml and example.xml (prefixed
+with the current timestamp).  This should return an HTTP status of 201 Created and a Deposit Receipt.  You may add
+-H "X-In-Progress: true" to get a 202 Accepted back instead, as above.
+
+FIXME: it is a known bug that the server doesn't properly interpret the base64 encoded zip file, so it will not unzip
+as-is on the server.
+
+FIXME: we need to include an X-On-Behalf-Of example here
+curl -i --http1.0 --data-binary "@example.zip"
+    -H "Content-Disposition: filename=example.zip"
+    -H "Content-Type: application/zip"
+    -H "X-Packaging: http://purl.org/net/sword-types/METSDSpaceSIP"
+    -H "X-On-Behalf-Of: obo"
+    [Col-URI]
+
+List the contents of a Collection
+---------------------------------
+
+HTTP: GET on Col-URI
+
+curl -i [Col-URI]
+
+This will return an Atom Feed where each atom:entry refers to a collection in the specified collection.  This is
+implemented only for the sake of convenience, so is not a full Feed; instead it just contains an atom:link element
+containing the href to the Edit-URI for that Collection
+
+Get a representation of the container (Media Resource)
+------------------------------------------------------
+
+HTTP: GET on the Cont-URI or EM-URI
+
+curl -i [EM-URI]
+
+Get the default dissemination package from the server.  In this case curl fills in the Accept header for us with "*/*".
+This will return an application/zip file of all the content in the container.
+
+curl -i -H "Accept: application/zip;swordpackage=http://www.swordapp.org/package/default" [EM-URI]
+
+Explicitly request a zip file in the standard sword package format (which is, incidentally, a plain zip file)
+
+curl -i -H "Accept: application/zip" [EM-URI]
+
+Explicitly request an ordinary zip file of the content (which happens to be no different from the standard sword package)
+
+curl -i -H "Accept: text/html" [EM-URI]
+
+Explicitly request the HTML representation of the Media Resource.  This will return a 302 Found HTTP header with a
+Location header which points to the HTML representation
+
+curl -i -H "Accept: application/vnd+msword" [EM-URI]
+
+Generate a 415 Unsupported Media Type error
+
+Overwrite the existing Media Resource with a new one
+----------------------------------------------------
+
+HTTP: PUT on EM-URI
+
+curl -i -X PUT --http1.0 --data-binary "@example.zip"
+       -H "Content-Disposition: filename=example.zip"
+       -H "Content-Type: application/zip"
+       -H "X-Packaging: http://purl.org/net/sword-types/METSDSpaceSIP"
+       [EM-URI]
+
+This will replace all the existing content in the container identified with the EM-URI with the attached example.zip
+file.  It will return a 201 Created and a Deposit Receipt
+
+curl -i -X PUT --http1.0 --data-binary "@example.zip"
+       -H "Content-Disposition: filename=example.zip"
+       -H "Content-Type: application/zip"
+       -H "X-Packaging: http://purl.org/net/sword-types/METSDSpaceSIP"
+       -H "X-In-Progress: true"
+       [EM-URI]
+
+This will do the same as above, but will return a 202 Accepted indicating that the update has been accepted into the
+server, but has not yet been processed (for the purposes of example, obviously; it doesn't make any difference to
+what actually happens on the server).
+
+FIXME: we need to do an X-Suppress-Metadata example
+curl -i -X PUT --http1.0 --data-binary "@example.zip"
+       -H "Content-Disposition: filename=example.zip"
+       -H "Content-Type: application/zip"
+       -H "X-Packaging: http://purl.org/net/sword-types/METSDSpaceSIP"
+       -H "X-Suppress-Metadata: true"
+       [EM-URI]
+
+FIXME: we need to do an X-On-Behalf-Of example
+curl -i -X PUT --http1.0 --data-binary "@example.zip"
+       -H "Content-Disposition: filename=example.zip"
+       -H "Content-Type: application/zip"
+       -H "X-Packaging: http://purl.org/net/sword-types/METSDSpaceSIP"
+       -H "X-On-Behalf-Of: obo"
+       [EM-URI]
+
+Delete the content but not the container
+----------------------------------------
+
+HTTP: DELETE on EM-URI
+
+curl -i -X DELETE [EM-URI]
+
+This deletes all the content from the store, but not the container itself, and returns a 200 OK and a Deposit Receipt
+
+FIXME: we should do an X-On-Behalf-Of example here too
+curl -i -X DELETE -H "X-On-Behalf-Of: obo" [EM-URI]
+
+Get a representation of the container
+-------------------------------------
+
+HTTP: GET on Edit-URI
+
+curl -i [Edit-URI]
+
+This retrieves the Edit-URI in its default format, which is as a copy of the Deposit Receipt - an atom entry document
+
+curl -i -H "Accept: application/rdf+xml" [Edit-URI]
+
+This gives us the pure RDF/XML statement from the repository
+
+curl -i -H "Accept: application/atom+xml;type=entry" [Edit-URI]
+
+This explicitly requests the Edit-URI in its atom entry form, which is the same as the default format
+
+Update a container by adding new content to the existing content
+----------------------------------------------------------------
+
+HTTP: POST on Edit-URI
+
+curl -i --http1.0 --data-binary "@example.zip"
+    -H "Content-Disposition: filename=example.zip"
+    -H "Content-Type: application/zip"
+    -H "X-Packaging: http://purl.org/net/sword-types/METSDSpaceSIP"
+    [Edit-URI]
+
+This adds the example.zip file to the server (notice that the Content-Disposition gives it the same name - SSS will
+localise the names on receipt to avoid overwriting existing files) without removing any of the existing content.  This
+will return a 201 Created (or if you add the X-In-Progress header a 202 Accepted) and the Deposit Receipt.
+
+curl -i --http1.0 --data-binary "@multipart.dat"
+    -H 'Content-Type: multipart/related; boundary="===============0670350989=="'
+    -H "MIME-Version: 1.0"
+    -H "X-Packaging: http://purl.org/net/sword-types/METSDSpaceSIP"
+    [Edit-URI]
+
+This will mimic an Atom Multipart deposit and will create two items in the container: atom.xml and example.xml (prefixed
+with the current timestamp).  The atom.xml will overwrite any existing atom.xml file in this case, while the
+example.zip will just be added under a localised name.  This should return an HTTP status of 201 Created and a Deposit
+Receipt.  You may add -H "X-In-Progress: true" to get a 202 Accepted back instead, as above.
+
+curl -i --http1.0 --data-binary "@multipart.dat"
+    -H 'Content-Type: multipart/related; boundary="===============0670350989=="'
+    -H "MIME-Version: 1.0"
+    -H "X-Packaging: http://purl.org/net/sword-types/METSDSpaceSIP"
+    -H "X-Suppress-Metadata: true"
+    [Edit-URI]
+
+This version of the request, with the X-Suppress-Metadata header set will do the same as above but it will not
+attempt to extract any metadata from the atom.xml file as it would have done otherwise.
+
+FIXME: we need an X-On-Behalf-Of example
+curl -i --http1.0 --data-binary "@example.zip"
+    -H "Content-Disposition: filename=example.zip"
+    -H "Content-Type: application/zip"
+    -H "X-Packaging: http://purl.org/net/sword-types/METSDSpaceSIP"
+    -H "X-On-Behalf-Of: obo"
+    [Edit-URI]
+
+Delete the container and all its contents
+-----------------------------------------
+
+HTTP: DELETE on Edit-URI
+
+curl -i -X DELETE [Edit-URI]
+
+This will remove all the content from the container followed by the container itself.  It will return a 204 No Content
+response with no response body.
