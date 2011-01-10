@@ -4,7 +4,7 @@ __version__ = "0.1"
 __author__ = ["Richard Jones <richard@oneoverzero.com>"]
 __license__ = "public domain"
 
-import web, uuid, os
+import web, uuid, os, re, base64
 from lxml import etree
 from datetime import datetime
 from zipfile import ZipFile
@@ -25,27 +25,40 @@ class Configuration(object):
         # The directory where the deposited content should be stored
         self.store_dir = os.path.join(os.getcwd(), "store")
 
+        # user details; the user/password pair should be used for HTTP Basic Authentication, and the obo is the user
+        # to use for X-On-Behalf-Of requests.  Set authenticate=False if you want to test the server without caring
+        # about authentication
+        self.authenticate = True
+        self.user = "sword"
+        self.password = "sword"
+        self.obo = "obo"
+
         # What media ranges should the app:accept element in the Service Document support
         self.app_accept = ["*/*"]
 
         # What packaging formats should the sword:acceptPackaging element in the Service Document support
         # The tuple is the URI of the format and your desired "q" value
         self.sword_accept_package = [
-                ("http://purl.org/net/sword-types/METSDSpaceSIP", "1.0")
+                ("http://purl.org/net/sword/package/METSDSpaceSIP", "1.0")
             ]
+
+        # list of package formats that SSS can provide when retrieving the Media Resource
+        self.sword_disseminate_package = [
+            "http://purl.org/net/sword/package/default"
+        ]
 
         # Supported package format disseminators; for the content type (dictionary key), the associated
         # class will be used to package the content for dissemination
         self.package_disseminators = {
-                "application/zip;swordpackage=http://www.swordapp.org/package/default" : DefaultDisseminator,
+                "application/zip;swordpackage=http://purl.org/net/sword/package/default" : DefaultDisseminator,
                 "application/zip" : DefaultDisseminator
             }
 
         # Supported package format ingesters; for the X-Packaging header (dictionary key), the associated class will
         # be used to unpackage deposited content
         self.package_ingesters = {
-                "http://www.swordapp.org/package/default" : DefaultIngester,
-                "http://purl.org/net/sword-types/METSDSpaceSIP" : METSDSpaceIngester
+                "http://purl.org/net/sword/package/default" : DefaultIngester,
+                "http://purl.org/net/sword/types/METSDSpaceSIP" : METSDSpaceIngester
             }
 
 class Namespaces(object):
@@ -101,17 +114,57 @@ urls = (
 #############################################################################
 # Define a set of handlers for the various URLs defined above to be used by web.py
 
-class ServiceDocument(object):
+class SwordHttpHandler(object):
+    def authenticate(self, web):
+        auth = web.ctx.env.get('HTTP_AUTHORIZATION')
+        obo = web.ctx.env.get("HTTP_X_ON_BEHALF_OF")
+
+        cfg = Configuration()
+
+        # we may have turned authentication off for development purposes
+        if not cfg.authenticate:
+            return True
+
+        # if we want to authenticate, but there is no auth string then bouce with a 401
+        if auth is None:
+            web.header('WWW-Authenticate','Basic realm="SSS"')
+            web.ctx.status = '401 Unauthorized'
+            return False
+        else:
+            # assuming Basic authentication, get the username and password
+            auth = re.sub('^Basic ','',auth)
+            username, password = base64.decodestring(auth).split(':')
+
+            # if the username and password don't match, bounce the user with a 401
+            # meanwhile if the obo header has been passed but doesn't match the config value also bounce
+            # witha 401 (I know this is an odd looking if/else but it's for clarity of what's going on
+            if username != cfg.user or password != cfg.password:
+                web.ctx.status = '401 Unauthorized'
+                return False
+            elif obo is not None and obo != cfg.obo:
+                web.ctx.status = '401 Unauthorized'
+                return False
+
+        return True
+
+class ServiceDocument(SwordHttpHandler):
     """
     Handle all requests for Service documents (requests to SD-URI)
     """
     def GET(self):
         """ GET the service document - returns an XML document """
+
+        # authenticate
+        auth = self.authenticate(web)
+        if not auth:
+            return
+
+        # if we get here authentication was successful and we carry on
         ss = SWORDServer()
         web.header("Content-Type", "text/xml")
         return ss.service_document()
 
-class Collection(object):
+class Collection(SwordHttpHandler):
     """
     Handle all requests to SWORD/ATOM Collections (these are the collections listed in the Service Document) - Col-URI
     """
@@ -122,6 +175,12 @@ class Collection(object):
         - collection:   The ID of the collection as specified in the requested URL
         Returns an XML document with some metadata about the collection and the contents of that collection
         """
+        # authenticate
+        auth = self.authenticate(web)
+        if not auth:
+            return
+
+        # if we get here authentication was successful and we carry on
         ss = SWORDServer()
         web.header("Content-Type", "text/xml")
         return ss.list_collection(collection)
@@ -133,6 +192,12 @@ class Collection(object):
         - collection:   The ID of the collection as specified in the requested URL
         Returns a Deposit Receipt
         """
+        # authenticate
+        auth = self.authenticate(web)
+        if not auth:
+            return
+
+        # if we get here authentication was successful and we carry on
         ss = SWORDServer()
         spec = SWORDSpec()
 
@@ -140,12 +205,17 @@ class Collection(object):
         deposit = spec.get_deposit(web)
         result = ss.deposit_new(collection, deposit)
 
+        if result is None:
+            return web.notfound()
+        
         # unless this is an error, the content type is an atom entry
         web.header("Content-Type", "application/atom+xml;type=entry")
         if result.created:
+            web.header("Location", result.location)
             web.ctx.status = "201 Created"
             return result.receipt
         elif result.accepted:
+            web.header("Location", result.location)
             web.ctx.status = "202 Accepted"
             return result.receipt
         else:
@@ -155,7 +225,7 @@ class Collection(object):
             web.ctx.status = result.error_code
             return result.error
 
-class MediaResourceContent(object):
+class MediaResourceContent(SwordHttpHandler):
     """
     Class to represent the content of the media resource.  This is the object which appears under atom:content@src, not
     the EM-URI.  It has its own class handler because it is a distinct resource, which does not necessarily resolve to
@@ -169,6 +239,8 @@ class MediaResourceContent(object):
         - id:   the ID of the object in the store
         Returns the content in the requested format
         """
+        # NOTE: this method is not authenticated - we imagine sharing this URL with end-users who will just want
+        # to retrieve the content.  It's only for the purposes of example, anyway
         ss = SWORDServer()
 
         # first thing we need to do is check that there is an object to return, because otherwise we may throw a
@@ -186,7 +258,7 @@ class MediaResourceContent(object):
         # The list of acceptable formats (in order of preference).  The tuples list the type and
         # the parameters section respectively
         cn.acceptable = [
-                ContentType("application", "zip", "swordpackage=http://www.swordapp.org/package/default"),
+                ContentType("application", "zip", "swordpackage=http://purl.org/net/sword/package/default"),
                 ContentType("application", "zip"),
                 ContentType("text", "html")
             ]
@@ -225,6 +297,12 @@ class MediaResource(MediaResourceContent):
         - id:   the ID of the media resource as specified in the URL
         Returns a Deposit Receipt
         """
+        # authenticate
+        auth = self.authenticate(web)
+        if not auth:
+            return
+
+        # if we get here authentication was successful and we carry on
         ss = SWORDServer()
         spec = SWORDSpec()
 
@@ -267,6 +345,12 @@ class MediaResource(MediaResourceContent):
         - id:   the ID of the object to have its content removed as per the requested URI
         Return a Deposit Receipt
         """
+        # authenticate
+        auth = self.authenticate(web)
+        if not auth:
+            return
+
+        # if we get here authentication was successful and we carry on
         ss = SWORDServer()
         spec = SWORDSpec()
 
@@ -289,7 +373,7 @@ class MediaResource(MediaResourceContent):
             web.header("Content-Type", "application/atom+xml;type=entry")
             return result.receipt
 
-class Container(object):
+class Container(SwordHttpHandler):
     """
     Class to deal with requests to the container, which is represented by the main Atom Entry document returned in
     the deposit receipt (Edit-URI).
@@ -303,6 +387,12 @@ class Container(object):
         Returns a representation of the container: SSS will return either the Atom Entry identical to the one supplied
         as a deposit receipt or the pure RDF/XML Statement depending on the Accept header
         """
+        # authenticate
+        auth = self.authenticate(web)
+        if not auth:
+            return
+
+        # if we get here authentication was successful and we carry on
         ss = SWORDServer()
         spec = SWORDSpec()
 
@@ -345,6 +435,12 @@ class Container(object):
         - id:    The ID of the container as contained in the URL
         Returns a Deposit Receipt
         """
+        # authenticate
+        auth = self.authenticate(web)
+        if not auth:
+            return
+
+        # if we get here authentication was successful and we carry on
         ss = SWORDServer()
         spec = SWORDSpec()
 
@@ -378,6 +474,12 @@ class Container(object):
         - id:   the ID of the container
         Returns nothing, as there is nothing to return (204 No Content)
         """
+        # authenticate
+        auth = self.authenticate(web)
+        if not auth:
+            return
+
+        # if we get here authentication was successful and we carry on
         ss = SWORDServer()
         spec = SWORDSpec()
         delete = spec.get_delete(web.ctx.environ)
@@ -399,7 +501,7 @@ class Container(object):
             web.ctx.status = "204 No Content"
             return
 
-class WebUI(object):
+class WebUI(SwordHttpHandler):
     """
     Class to provide a basic web interface to the store for convenience
     """
@@ -407,7 +509,7 @@ class WebUI(object):
         # FIXME: this is useful but not hugely important; get to it later
         pass
 
-class Part(object):
+class Part(SwordHttpHandler):
     """
     Class to provide access to the component parts of the object on the server
     """
@@ -723,7 +825,7 @@ class SWORDRequest(object):
         """
 
         self.on_behalf_of = None
-        self.packaging = "http://www.swordapp.org/package/default"
+        self.packaging = "http://purl.org/net/sword/package/default"
         self.in_progress = False
         self.suppress_metadata = False
 
@@ -773,12 +875,14 @@ class DepositResponse(object):
         - error_code    -   if there was an error, what HTTP status code
         - error     -   sword error document if relevant
         - receipt   -   deposit receipt if successful deposit
+        - location  -   the Edit-URI which will be supplied to the client as the Location header in responses
         """
         self.created = False
         self.accepted = False
         self.error_code = None
         self.error = None
         self.receipt = None
+        self.location = None
 
 class MediaResourceResponse(object):
     """
@@ -965,6 +1069,14 @@ class SWORDServer(object):
             abstract = etree.SubElement(collection, self.ns.DC + "abstract")
             abstract.text = "Collection Description"
 
+            # support for mediation
+            mediation = etree.SubElement(collection, self.ns.SWORD + "mediation")
+            mediation.text = "true"
+
+            # treatment
+            treatment = etree.SubElement(collection, self.ns.SWORD + "treatment")
+            treatment.text = "Treatment description"
+
             # SWORD packaging formats accepted
             for format, q in self.configuration.sword_accept_package:
                 acceptPackaging = etree.SubElement(collection, self.ns.SWORD + "acceptPackaging")
@@ -1053,6 +1165,7 @@ class SWORDServer(object):
         # finally, assemble the deposit response and return
         dr = DepositResponse()
         dr.receipt = receipt
+        dr.location = edit_uri
         if deposit.in_progress:
             dr.accepted = True
         else:
@@ -1354,9 +1467,9 @@ class SWORDServer(object):
         summary.text = metadata['abstract']
 
         # User Agent
-        # FIXME: why is the userAgent relevant?  Can we get rid of it?
-        userAgent = etree.SubElement(entry, self.ns.SWORD + "userAgent")
-        userAgent.text = "MyJavaClient/0.1 Restlet/2.0"
+        # FIXME: why is the userAgent relevant?  Can we get rid of it?  I have done so for the purposes of example
+        #userAgent = etree.SubElement(entry, self.ns.SWORD + "userAgent")
+        #userAgent.text = "MyJavaClient/0.1 Restlet/2.0"
 
         # Generator - identifier for this server software
         generator = etree.SubElement(entry, self.ns.ATOM + "generator")
@@ -1368,6 +1481,13 @@ class SWORDServer(object):
         content = etree.SubElement(entry, self.ns.ATOM + "content")
         content.set("type", "application/zip")
         content.set("src", cont_uri)
+
+        # FIXME: this is a proposal for how to possibly deal with announcing which package formats
+        # can be content negotiated for.  Basically we allow for multiple sword:package elements
+        # which will tell people what they can content negotiate for
+        for disseminator in self.configuration.sword_disseminate_package:
+            sp = etree.SubElement(entry, self.ns.SWORD + "package")
+            sp.text = disseminator
 
         # Edit-URI
         editlink = etree.SubElement(entry, self.ns.ATOM + "link")
@@ -1402,8 +1522,8 @@ class Statement(object):
         self.in_progress = False
 
         # URIs to use for the two supported states in SSS
-        self.in_progress_uri = "http://www.swordapp.org/state/in-progress"
-        self.archived_uri = "http://www.swordapp.org/state/archived"
+        self.in_progress_uri = "http://purl.org/net/sword/state/in-progress"
+        self.archived_uri = "http://purl.org/net/sword/state/archived"
 
         # the descriptions to associated with the two supported states in SSS
         self.states = {
@@ -1446,7 +1566,7 @@ class Statement(object):
                     self.rem_uri = resource
                 if element.tag == self.ns.SWORD + "state":
                     state = element.get(self.ns.RDF + "resource")
-                    self.in_progress = state == "http://www.swordapp.org/state/in-progress"
+                    self.in_progress = state == "http://purl.org/net/sword/state/in-progress"
                 if element.tag == self.ns.SWORD + "packaging":
                     packaging = element.get(self.ns.RDF + "resource")
                 if element.tag == self.ns.SWORD + "depositedOn":
