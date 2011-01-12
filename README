@@ -121,6 +121,15 @@ curl -i --http1.0 --data-binary "@example.zip"
 This is an example using a different package format for the example.zip.  At the moment the ingest packager in SSS
 will simply leave this package as it is, without attempting to unpack it
 
+curl -i --http1.0 --data-binary "@example.zip"
+    -H "Content-Disposition: filename=example.zip"
+    -H "Content-Type: application/zip"
+    -H "Content-MD5: 2b25f82ba67284461d4a481d7a06dd28"
+    sword:sword[Col-URI]
+
+This is an example where we provide the correct MD5 checksum for the item, just to demonstrate that this works with
+or without the checksum.  See the section below on errors to supply incorrect checksums.
+
 List the contents of a Collection
 ---------------------------------
 
@@ -292,3 +301,20 @@ curl -i --http1.0 --data-binary "@example.zip"
 
 Generates an ErrorContent error response on depositing a package whose package type doesn't match the X-Packaging
 header
+
+curl -i --http1.0 --data-binary "@example.zip"
+    -H "Content-Disposition: filename=example.zip"
+    -H "Content-Type: application/zip"
+    -H "Content-MD5: 1234567890"
+    sword:sword[Col-URI]
+
+Generate an error for a mismatch between the checksum and the supplied checksum header, resulting in a 412 Precondition
+Failed error.
+
+curl -i --http1.0 --data-binary "@example.zip"
+    -H "Content-Disposition: filename=example.zip"
+    -H "Content-Type: application/zip"
+    -H "X-In-Progress: whatever"
+    sword:sword[Col-URI]
+
+Generate a Bad Request error by passing an illegal value to X-In-Progress, resulting in a 400 Bad Request response

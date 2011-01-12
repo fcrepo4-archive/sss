@@ -4,7 +4,7 @@ __version__ = "0.1"
 __author__ = ["Richard Jones <richard@oneoverzero.com>"]
 __license__ = "public domain"
 
-import web, uuid, os, re, base64
+import web, uuid, os, re, base64, hashlib
 from lxml import etree
 from datetime import datetime
 from zipfile import ZipFile
@@ -27,10 +27,13 @@ class Configuration(object):
 
         # user details; the user/password pair should be used for HTTP Basic Authentication, and the obo is the user
         # to use for X-On-Behalf-Of requests.  Set authenticate=False if you want to test the server without caring
-        # about authentication
+        # about authentication, set mediation=False if you want to test the server's errors on invalid attempts at
+        # mediation
         self.authenticate = True
         self.user = "sword"
         self.password = "sword"
+        
+        self.mediation = False
         self.obo = "obo"
 
         # What media ranges should the app:accept element in the Service Document support
@@ -58,7 +61,7 @@ class Configuration(object):
         # be used to unpackage deposited content
         self.package_ingesters = {
                 "http://purl.org/net/sword/package/default" : DefaultIngester,
-                "http://purl.org/net/sword/types/METSDSpaceSIP" : METSDSpaceIngester
+                "http://purl.org/net/sword/package/METSDSpaceSIP" : METSDSpaceIngester
             }
 
         # supply this header in the X-Packaging header to generate a http://purl.org/net/sword/error/ErrorContent
@@ -79,7 +82,7 @@ class Namespaces(object):
         self.ATOM = "{%s}" % self.ATOM_NS
 
         # SWORD namespace and lxml format
-        self.SWORD_NS = "http://purl.org/net/sword/"
+        self.SWORD_NS = "http://purl.org/net/sword/terms/"
         self.SWORD = "{%s}" % self.SWORD_NS
 
         # Dublin Core namespace and lxml format
@@ -133,7 +136,7 @@ class SwordHttpHandler(object):
         if auth is None:
             web.header('WWW-Authenticate','Basic realm="SSS"')
             web.ctx.status = '401 Unauthorized'
-            return None
+            return Auth()
         else:
             # assuming Basic authentication, get the username and password
             auth = re.sub('^Basic ','',auth)
@@ -144,10 +147,10 @@ class SwordHttpHandler(object):
             # witha 401 (I know this is an odd looking if/else but it's for clarity of what's going on
             if username != cfg.user or password != cfg.password:
                 web.ctx.status = '401 Unauthorized'
-                return None
+                return Auth()
             elif obo is not None and obo != cfg.obo:
-                web.ctx.status = '401 Unauthorized'
-                return None
+                # we throw a sword error for TargetOwnerUnknown
+                return Auth(cfg.user, obo, target_owner_unknown=True)
 
         user = cfg.user
         if obo is not None:
@@ -163,7 +166,14 @@ class ServiceDocument(SwordHttpHandler):
 
         # authenticate
         auth = self.authenticate(web)
-        if auth is None:
+        if not auth.success():
+            if auth.target_owner_unknown:
+                spec = SWORDSpec()
+                ss = SWORDServer()
+                error = ss.sword_error(spec.error_target_owner_unknown_uri, auth.obo)
+                web.header("Content-Type", "text/xml")
+                web.ctx.status = "401 Unauthorized"
+                return error
             return
 
         # if we get here authentication was successful and we carry on (we don't care who authenticated)
@@ -182,9 +192,16 @@ class Collection(SwordHttpHandler):
         - collection:   The ID of the collection as specified in the requested URL
         Returns an XML document with some metadata about the collection and the contents of that collection
         """
-        # authenticate
+       # authenticate
         auth = self.authenticate(web)
-        if auth is None:
+        if not auth.success():
+            if auth.target_owner_unknown:
+                spec = SWORDSpec()
+                ss = SWORDServer()
+                error = ss.sword_error(spec.error_target_owner_unknown_uri, auth.obo)
+                web.header("Content-Type", "text/xml")
+                web.ctx.status = "401 Unauthorized"
+                return error
             return
 
         # if we get here authentication was successful and we carry on (we don't care who authenticated)
@@ -201,12 +218,27 @@ class Collection(SwordHttpHandler):
         """
         # authenticate
         auth = self.authenticate(web)
-        if auth is None:
+        if not auth.success():
+            if auth.target_owner_unknown:
+                spec = SWORDSpec()
+                ss = SWORDServer()
+                error = ss.sword_error(spec.error_target_owner_unknown_uri, auth.obo)
+                web.header("Content-Type", "text/xml")
+                web.ctx.status = "401 Unauthorized"
+                return error
             return
 
         # if we get here authentication was successful and we carry on
         ss = SWORDServer()
         spec = SWORDSpec()
+
+        # check the validity of the request
+        invalid = spec.validate_deposit_request(web)
+        if invalid is not None:
+            error = ss.sword_error(spec.error_bad_request_uri, invalid)
+            web.header("Content-Type", "text/xml")
+            web.ctx.status = "400 Bad Request"
+            return error
 
         # take the HTTP request and extract a Deposit object from it
         deposit = spec.get_deposit(web, auth)
@@ -305,21 +337,31 @@ class MediaResource(MediaResourceContent):
         """
         # authenticate
         auth = self.authenticate(web)
-        if auth is None:
+        if not auth.success():
+            if auth.target_owner_unknown:
+                spec = SWORDSpec()
+                ss = SWORDServer()
+                error = ss.sword_error(spec.error_target_owner_unknown_uri, auth.obo)
+                web.header("Content-Type", "text/xml")
+                web.ctx.status = "401 Unauthorized"
+                return error
             return
 
         # if we get here authentication was successful and we carry on
         ss = SWORDServer()
         spec = SWORDSpec()
 
+        # check the validity of the request (note that multipart requests are not permitted in this method)
+        invalid = spec.validate_deposit_request(web, allow_multipart=False)
+        if invalid is not None:
+            error = ss.sword_error(spec.error_bad_request_uri, invalid)
+            web.header("Content-Type", "text/xml")
+            web.ctx.status = "400 Bad Request"
+            return error
+
         # get a deposit object.  The PUT operation only supports a single binary deposit, not an Atom Multipart one
         # so if the deposit object has an atom part we should return an error
         deposit = spec.get_deposit(web, auth)
-
-        # FIXME: does this need me to return a SWORD Error document?  We need to look at the 1.0 SWORD spec and find
-        # out what it says about Bad Requests
-        if deposit.atom is not None:
-            return web.badrequest()
 
         # next, before processing the request, let's check that the id is valid, and if not 404 the client
         if not ss.exists(id):
@@ -352,12 +394,27 @@ class MediaResource(MediaResourceContent):
         """
         # authenticate
         auth = self.authenticate(web)
-        if auth is None:
+        if not auth.success():
+            if auth.target_owner_unknown:
+                spec = SWORDSpec()
+                ss = SWORDServer()
+                error = ss.sword_error(spec.error_target_owner_unknown_uri, auth.obo)
+                web.header("Content-Type", "text/xml")
+                web.ctx.status = "401 Unauthorized"
+                return error
             return
 
         # if we get here authentication was successful and we carry on
         ss = SWORDServer()
         spec = SWORDSpec()
+
+        # check the validity of the request
+        invalid = spec.validate_delete_request(web)
+        if invalid is not None:
+            error = ss.sword_error(spec.error_bad_request_uri, invalid)
+            web.header("Content-Type", "text/xml")
+            web.ctx.status = "400 Bad Request"
+            return error
 
         # parse the delete request out of the HTTP request
         delete = spec.get_delete(web.ctx.environ, auth)
@@ -394,12 +451,18 @@ class Container(SwordHttpHandler):
         """
         # authenticate
         auth = self.authenticate(web)
-        if auth is None:
+        if not auth.success():
+            if auth.target_owner_unknown:
+                spec = SWORDSpec()
+                ss = SWORDServer()
+                error = ss.sword_error(spec.error_target_owner_unknown_uri, auth.obo)
+                web.header("Content-Type", "text/xml")
+                web.ctx.status = "401 Unauthorized"
+                return error
             return
 
         # if we get here authentication was successful and we carry on (we don't care who authenticated)
         ss = SWORDServer()
-        spec = SWORDSpec()
 
         # first thing we need to do is check that there is an object to return, because otherwise we may throw a
         # 415 Unsupported Media Type without looking first to see if there is even any media to content negotiate for
@@ -442,12 +505,27 @@ class Container(SwordHttpHandler):
         """
         # authenticate
         auth = self.authenticate(web)
-        if auth is None:
+        if not auth.success():
+            if auth.target_owner_unknown:
+                spec = SWORDSpec()
+                ss = SWORDServer()
+                error = ss.sword_error(spec.error_target_owner_unknown_uri, auth.obo)
+                web.header("Content-Type", "text/xml")
+                web.ctx.status = "401 Unauthorized"
+                return error
             return
 
         # if we get here authentication was successful and we carry on
         ss = SWORDServer()
         spec = SWORDSpec()
+
+        # check the validity of the request
+        invalid = spec.validate_deposit_request(web)
+        if invalid is not None:
+            error = ss.sword_error(spec.error_bad_request_uri, invalid)
+            web.header("Content-Type", "text/xml")
+            web.ctx.status = "400 Bad Request"
+            return error
 
         # take the HTTP request and extract a Deposit object from it
         deposit = spec.get_deposit(web, auth)
@@ -480,12 +558,28 @@ class Container(SwordHttpHandler):
         """
         # authenticate
         auth = self.authenticate(web)
-        if auth is None:
+        if not auth.success():
+            if auth.target_owner_unknown:
+                spec = SWORDSpec()
+                ss = SWORDServer()
+                error = ss.sword_error(spec.error_target_owner_unknown_uri, auth.obo)
+                web.header("Content-Type", "text/xml")
+                web.ctx.status = "401 Unauthorized"
+                return error
             return
 
         # if we get here authentication was successful and we carry on
         ss = SWORDServer()
         spec = SWORDSpec()
+
+        # check the validity of the request
+        invalid = spec.validate_delete_request(web)
+        if invalid is not None:
+            error = ss.sword_error(spec.error_bad_request_uri, invalid)
+            web.header("Content-Type", "text/xml")
+            web.ctx.status = "400 Bad Request"
+            return error
+
         delete = spec.get_delete(web.ctx.environ, auth)
 
         # next, before processing the request, let's check that the id is valid, and if not 404 the client
@@ -815,9 +909,13 @@ class ContentNegotiator(object):
 # them to exchange messages agnostically to the interface
 
 class Auth(object):
-    def __init__(self, by, obo=None):
+    def __init__(self, by=None, obo=None, target_owner_unknown=False):
         self.by = by
         self.obo = obo
+        self.target_owner_unknown = target_owner_unknown
+
+    def success(self):
+        return self.by is not None and not self.target_owner_unknown
 
 class SWORDRequest(object):
     """
@@ -837,6 +935,7 @@ class SWORDRequest(object):
         self.in_progress = False
         self.suppress_metadata = False
         self.auth = None
+        self.content_md5 = None
 
     def set_by_header(self, key, value):
         """
@@ -853,6 +952,8 @@ class SWORDRequest(object):
             self.in_progress = (value.strip() == "true")
         elif key == "HTTP_X_SUPPRESS_METADATA":
             self.suppress_metadata = (value.strip() == "true")
+        elif key == "HTTP_CONTENT_MD5":
+            self.content_md5 = value
 
 class DepositRequest(SWORDRequest):
     """
@@ -948,10 +1049,60 @@ class SWORDSpec(object):
         # The HTTP headers that are part of the specification (from a web.py perspective - don't be fooled, these
         # aren't the real HTTP header names - see the spec)
         self.sword_headers = [
-            "HTTP_X_ON_BEHALF_OF", "HTTP_X_PACKAGING", "HTTP_X_IN_PROGRESS", "HTTP_X_SUPPRESS_METADATA"
+            "HTTP_X_ON_BEHALF_OF", "HTTP_X_PACKAGING", "HTTP_X_IN_PROGRESS", "HTTP_X_SUPPRESS_METADATA",
+            "HTTP_CONTENT_MD5"
         ]
 
         self.error_content_uri = "http://purl.org/net/sword/error/ErrorContent"
+        self.error_checksum_mismatch_uri = "http://purl.org/net/sword/error/ErrorChecksumMismatch"
+        self.error_bad_request_uri = "http://purl.org/net/sword/error/ErrorBadRequest"
+        self.error_target_owner_unknown_uri = "http://purl.org/net/sword/error/TargetOwnerUnknown"
+        self.error_mediation_not_allowed_uri = "http://purl.org/net/sword/error/MediationNotAllowed"
+
+    def validate_deposit_request(self, web, allow_multipart=True):
+        print str(allow_multipart)
+        dict = web.ctx.environ
+
+        # get each of the allowed SWORD headers that can be validated and see if they do
+        ip = dict.get("HTTP_X_IN_PROGRESS")
+        if ip is not None and ip != "true" and ip != "false":
+            return "X-In-Progress must be 'true' or 'false'"
+
+        sm = dict.get("HTTP_X_SUPPRESS_METADATA")
+        if sm is not None and sm != "true" and sm != "false":
+            return "X-Suppress-Metadata must be 'true' or 'false'"
+
+        # there must be both an "atom" and "payload" input or data in web.data()
+        webin = web.input()
+        if len(webin) != 2 and len(webin) > 0:
+            return "Multipart request has more than 2 parts"
+        if len(webin) == 2 and not webin.has_key("atom") and not webin.has_key("payload"):
+            return "Multipart request must contain Content-Dispositions with names 'atom' and 'payload'"
+        if len(webin) > 0 and not allow_multipart:
+            return "Multipart request not permitted in this context"
+
+        # if we get to here then we have a valid multipart or no multipart
+        if len(webin) != 2:
+            if web.data() is None:
+                return "No content sent to the server"
+
+        # validates
+        return None
+
+    def validate_delete_request(self, web):
+        dict = web.ctx.environ
+
+        # get each of the allowed SWORD headers that can be validated and see if they do
+        ip = dict.get("HTTP_X_IN_PROGRESS")
+        if ip is not None and ip != "true" and ip != "false":
+            return "X-In-Progress must be 'true' or 'false'"
+
+        sm = dict.get("HTTP_X_SUPPRESS_METADATA")
+        if sm is not None and sm != "true" and sm != "false":
+            return "X-Suppress-Metadata must be 'true' or 'false'"
+        
+        # validates
+        return None
 
     def get_deposit(self, web, auth=None):
         """
@@ -1087,7 +1238,7 @@ class SWORDServer(object):
 
             # support for mediation
             mediation = etree.SubElement(collection, self.ns.SWORD + "mediation")
-            mediation.text = "true"
+            mediation.text = "true" if self.configuration.mediation else "false"
 
             # treatment
             treatment = etree.SubElement(collection, self.ns.SWORD + "treatment")
@@ -1134,13 +1285,9 @@ class SWORDServer(object):
         Returns a DepositResponse object which will contain the Deposit Receipt or a SWORD Error
         """
         # check for standard possible errors, and throw if appropriate
-        if deposit.packaging == self.configuration.error_content_package:
-            spec = SWORDSpec()
-            dr = DepositResponse()
-            error_doc = self.sword_error(spec.error_content_uri)
-            dr.error = error_doc
-            dr.error_code = "400 Bad Request"
-            return dr
+        er = self.check_deposit_errors(deposit)
+        if er is not None:
+            return er
 
         # does the collection directory exist?  If not, we can't do a deposit
         if not self.dao.collection_exists(collection):
@@ -1236,6 +1383,11 @@ class SWORDServer(object):
         - deposit:  a DepositRequest object
         Return a DepositResponse containing the Deposit Receipt or a SWORD Error
         """
+        # check for standard possible errors, and throw if appropriate
+        er = self.check_deposit_errors(deposit)
+        if er is not None:
+            return er
+
         collection, id = self.um.interpret_oid(oid)
 
         # does the object directory exist?  If not, we can't do a deposit
@@ -1300,6 +1452,11 @@ class SWORDServer(object):
         - delete:   The DeleteRequest object
         Return a DeleteResponse containing the Deposit Receipt or the SWORD Error
         """
+        # check for standard possible errors, and throw if appropriate
+        er = self.check_delete_errors(delete)
+        if er is not None:
+            return er
+
         collection, id = self.um.interpret_oid(oid)
 
         # does the collection directory exist?  If not, we can't do a deposit
@@ -1365,6 +1522,11 @@ class SWORDServer(object):
         -deposit:   The DepositRequest object
         Returns a DepositResponse containing the Deposit Receipt or a SWORD Error
         """
+        # check for standard possible errors, and throw if appropriate
+        er = self.check_deposit_errors(deposit)
+        if er is not None:
+            return er
+
         collection, id = self.um.interpret_oid(oid)
 
         # does the collection directory exist?  If not, we can't do a deposit
@@ -1424,6 +1586,11 @@ class SWORDServer(object):
         -delete:    The DeleteRequest object
         Return a DeleteResponse object with may contain a SWORD Error document or nothing at all
         """
+        # check for standard possible errors, and throw if appropriate
+        er = self.check_delete_errors(delete)
+        if er is not None:
+            return er
+            
         collection, id = self.um.interpret_oid(oid)
 
         # does the collection directory exist?  If not, we can't do a deposit
@@ -1468,7 +1635,7 @@ class SWORDServer(object):
         if not metadata.has_key("creator"):
             metadata["creator"] = "SWORD Client"
         if not metadata.has_key("abstract"):
-            metadata["abstract"] = "Conten deposited with SWORD client"
+            metadata["abstract"] = "Content deposited with SWORD client"
 
         # Now assemble the deposit receipt
 
@@ -1513,16 +1680,16 @@ class SWORDServer(object):
         content.set("type", "application/zip")
         content.set("src", cont_uri)
 
-        # treatment
-        treatment = etree.SubElement(entry, self.ns.SWORD + "treatment")
-        treatment.text = "Treatment description"
-
         # FIXME: this is a proposal for how to possibly deal with announcing which package formats
         # can be content negotiated for.  Basically we allow for multiple sword:package elements
         # which will tell people what they can content negotiate for
         for disseminator in self.configuration.sword_disseminate_package:
             sp = etree.SubElement(entry, self.ns.SWORD + "package")
             sp.text = disseminator
+
+        # treatment
+        treatment = etree.SubElement(entry, self.ns.SWORD + "treatment")
+        treatment.text = "Treatment description"
 
         # Edit-URI
         editlink = etree.SubElement(entry, self.ns.ATOM + "link")
@@ -1539,7 +1706,7 @@ class SWORDServer(object):
         entry.append(xml)
         return etree.tostring(entry, pretty_print=True)
 
-    def sword_error(self, uri):
+    def sword_error(self, uri, msg=None):
         entry = etree.Element(self.ns.SWORD + "error", nsmap=self.emap)
         entry.set("href", uri)
 
@@ -1558,13 +1725,63 @@ class SWORDServer(object):
         # Summary field from metadata
         summary = etree.SubElement(entry, self.ns.ATOM + "summary")
         summary.set("type", "text")
-        summary.text = "Error Description: " + uri
+        text = "Error Description: " + uri
+        if msg is not None:
+            text += " ; " + msg
+        summary.text = text
 
         # treatment
         treatment = etree.SubElement(entry, self.ns.SWORD + "treatment")
         treatment.text = "processing failed"
 
         return etree.tostring(entry, pretty_print=True)
+
+    def check_delete_errors(self, delete):
+        # have we been asked to do a mediated delete, when this is not allowed?
+        if delete.auth is not None:
+            if delete.auth.obo is not None and not self.configuration.mediation:
+                spec = SWORDSpec()
+                dr = DepositResponse()
+                error_doc = self.sword_error(spec.error_mediation_not_allowed_uri)
+                dr.error = error_doc
+                dr.error_code = "412 Precondition Failed"
+                return dr
+        return None
+
+    def check_deposit_errors(self, deposit):
+        # have we been asked for an invalid package format
+        if deposit.packaging == self.configuration.error_content_package:
+            spec = SWORDSpec()
+            dr = DepositResponse()
+            error_doc = self.sword_error(spec.error_content_uri)
+            dr.error = error_doc
+            dr.error_code = "400 Bad Request"
+            return dr
+
+        # have we been given an incompatible MD5?
+        m = hashlib.md5()
+        m.update(deposit.content)
+        digest = m.hexdigest()
+        if deposit.content_md5 is not None:
+            if digest != deposit.content_md5:
+                spec = SWORDSpec()
+                dr = DepositResponse()
+                error_doc = self.sword_error(spec.error_checksum_mismatch_uri)
+                dr.error = error_doc
+                dr.error_code = "412 Precondition Failed"
+                return dr
+
+        # have we been asked to do a mediated deposit, when this is not allowed?
+        if deposit.auth is not None:
+            if deposit.auth.obo is not None and not self.configuration.mediation:
+                spec = SWORDSpec()
+                dr = DepositResponse()
+                error_doc = self.sword_error(spec.error_mediation_not_allowed_uri)
+                dr.error = error_doc
+                dr.error_code = "412 Precondition Failed"
+                return dr
+
+        return None
 
 class Statement(object):
     """
