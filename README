@@ -87,7 +87,7 @@ HTTP: POST on Col-URI
 curl -i --http1.0 --data-binary "@example.zip"
     -H "Content-Disposition: filename=example.zip"
     -H "Content-Type: application/zip"
-    [Col-URI]
+    sword:sword@[Col-URI]
 
 This posts the example.zip file to the Col-URI with the filename "example.zip", and specifying that it is a zip
 file.  Without the X-Packaging header this will be interpreted as a default SWORD package.  Col-URI should be obtained
@@ -115,7 +115,7 @@ with the current timestamp).  This should return an HTTP status of 201 Created a
 curl -i --http1.0 --data-binary "@example.zip"
     -H "Content-Disposition: filename=example.zip"
     -H "Content-Type: application/zip"
-    -H "X-Packaging: http://purl.org/net/sword-types/METSDSpaceSIP"
+    -H "X-Packaging: http://purl.org/net/sword/package/METSDSpaceSIP"
     sword:sword@[Col-URI]
 
 This is an example using a different package format for the example.zip.  At the moment the ingest packager in SSS
@@ -200,7 +200,7 @@ but it is a valid request.
 curl -i -X PUT --http1.0 --data-binary "@example.zip"
        -H "Content-Disposition: filename=example.zip"
        -H "Content-Type: application/zip"
-       -H "X-Packaging: http://purl.org/net/sword-types/METSDSpaceSIP"
+       -H "X-Packaging: http://purl.org/net/sword/package/METSDSpaceSIP"
        sword:sword@[EM-URI]
 
 An example of the same as above but with the X-Packaging header passed in.
@@ -267,7 +267,7 @@ attempt to extract any metadata from the atom.xml file as it would have done oth
 curl -i --http1.0 --data-binary "@example.zip"
     -H "Content-Disposition: filename=example.zip"
     -H "Content-Type: application/zip"
-    -H "X-Packaging: http://purl.org/net/sword-types/METSDSpaceSIP"
+    -H "X-Packaging: http://purl.org/net/sword/package/METSDSpaceSIP"
     sword:sword@[Edit-URI]
 
 Delete the container and all its contents
@@ -279,3 +279,16 @@ curl -i -X DELETE sword:sword@[Edit-URI]
 
 This will remove all the content from the container followed by the container itself.  It will return a 204 No Content
 response with no response body.
+
+
+Generating Errors
+-----------------
+
+curl -i --http1.0 --data-binary "@example.zip"
+    -H "Content-Disposition: filename=example.zip"
+    -H "Content-Type: application/zip"
+    -H "X-Packaging: http://purl.org/net/sword/package/error"
+    sword:sword[Col-URI]
+
+Generates an ErrorContent error response on depositing a package whose package type doesn't match the X-Packaging
+header

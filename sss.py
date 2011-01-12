@@ -61,6 +61,10 @@ class Configuration(object):
                 "http://purl.org/net/sword/types/METSDSpaceSIP" : METSDSpaceIngester
             }
 
+        # supply this header in the X-Packaging header to generate a http://purl.org/net/sword/error/ErrorContent
+        # sword error
+        self.error_content_package = "http://purl.org/net/sword/package/error"
+
 class Namespaces(object):
     """
     This class encapsulates all the namespace declarations that we will need
@@ -123,13 +127,13 @@ class SwordHttpHandler(object):
 
         # we may have turned authentication off for development purposes
         if not cfg.authenticate:
-            return True
+            return Auth(cfg.user)
 
         # if we want to authenticate, but there is no auth string then bouce with a 401
         if auth is None:
             web.header('WWW-Authenticate','Basic realm="SSS"')
             web.ctx.status = '401 Unauthorized'
-            return False
+            return None
         else:
             # assuming Basic authentication, get the username and password
             auth = re.sub('^Basic ','',auth)
@@ -140,12 +144,15 @@ class SwordHttpHandler(object):
             # witha 401 (I know this is an odd looking if/else but it's for clarity of what's going on
             if username != cfg.user or password != cfg.password:
                 web.ctx.status = '401 Unauthorized'
-                return False
+                return None
             elif obo is not None and obo != cfg.obo:
                 web.ctx.status = '401 Unauthorized'
-                return False
+                return None
 
-        return True
+        user = cfg.user
+        if obo is not None:
+            return Auth(user, obo)
+        return Auth(user)
 
 class ServiceDocument(SwordHttpHandler):
     """
@@ -156,10 +163,10 @@ class ServiceDocument(SwordHttpHandler):
 
         # authenticate
         auth = self.authenticate(web)
-        if not auth:
+        if auth is None:
             return
 
-        # if we get here authentication was successful and we carry on
+        # if we get here authentication was successful and we carry on (we don't care who authenticated)
         ss = SWORDServer()
         web.header("Content-Type", "text/xml")
         return ss.service_document()
@@ -177,10 +184,10 @@ class Collection(SwordHttpHandler):
         """
         # authenticate
         auth = self.authenticate(web)
-        if not auth:
+        if auth is None:
             return
 
-        # if we get here authentication was successful and we carry on
+        # if we get here authentication was successful and we carry on (we don't care who authenticated)
         ss = SWORDServer()
         web.header("Content-Type", "text/xml")
         return ss.list_collection(collection)
@@ -194,7 +201,7 @@ class Collection(SwordHttpHandler):
         """
         # authenticate
         auth = self.authenticate(web)
-        if not auth:
+        if auth is None:
             return
 
         # if we get here authentication was successful and we carry on
@@ -202,25 +209,24 @@ class Collection(SwordHttpHandler):
         spec = SWORDSpec()
 
         # take the HTTP request and extract a Deposit object from it
-        deposit = spec.get_deposit(web)
+        deposit = spec.get_deposit(web, auth)
         result = ss.deposit_new(collection, deposit)
 
         if result is None:
             return web.notfound()
         
-        # unless this is an error, the content type is an atom entry
-        web.header("Content-Type", "application/atom+xml;type=entry")
+        # created, accepted, or error
         if result.created:
+            web.header("Content-Type", "application/atom+xml;type=entry")
             web.header("Location", result.location)
             web.ctx.status = "201 Created"
             return result.receipt
         elif result.accepted:
+            web.header("Content-Type", "application/atom+xml;type=entry")
             web.header("Location", result.location)
             web.ctx.status = "202 Accepted"
             return result.receipt
         else:
-            # if it turns out to be an error, re-write the content-type header
-            # FIXME: is this how it works, or do we end up with two Content-Type headers?
             web.header("Content-Type", "text/xml")
             web.ctx.status = result.error_code
             return result.error
@@ -299,7 +305,7 @@ class MediaResource(MediaResourceContent):
         """
         # authenticate
         auth = self.authenticate(web)
-        if not auth:
+        if auth is None:
             return
 
         # if we get here authentication was successful and we carry on
@@ -308,7 +314,7 @@ class MediaResource(MediaResourceContent):
 
         # get a deposit object.  The PUT operation only supports a single binary deposit, not an Atom Multipart one
         # so if the deposit object has an atom part we should return an error
-        deposit = spec.get_deposit(web)
+        deposit = spec.get_deposit(web, auth)
 
         # FIXME: does this need me to return a SWORD Error document?  We need to look at the 1.0 SWORD spec and find
         # out what it says about Bad Requests
@@ -322,17 +328,16 @@ class MediaResource(MediaResourceContent):
         # now replace the content of the container
         result = ss.replace(id, deposit)
 
-        # unless this is an error, the content type is an atom entry
-        web.header("Content-Type", "application/atom+xml;type=entry")
+        # created, accepted or error
         if result.created:
+            web.header("Content-Type", "application/atom+xml;type=entry")
             web.ctx.status = "201 Created"
             return result.receipt
         elif result.accepted:
+            web.header("Content-Type", "application/atom+xml;type=entry")
             web.ctx.status = "202 Accepted"
             return result.receipt
         else:
-            # if it turns out to be an error, re-write the content-type header
-            # FIXME: is this how it works, or do we end up with two Content-Type headers?
             web.header("Content-Type", "text/xml")
             web.ctx.status = result.error_code
             return result.error
@@ -347,7 +352,7 @@ class MediaResource(MediaResourceContent):
         """
         # authenticate
         auth = self.authenticate(web)
-        if not auth:
+        if auth is None:
             return
 
         # if we get here authentication was successful and we carry on
@@ -355,7 +360,7 @@ class MediaResource(MediaResourceContent):
         spec = SWORDSpec()
 
         # parse the delete request out of the HTTP request
-        delete = spec.get_delete(web.ctx.environ)
+        delete = spec.get_delete(web.ctx.environ, auth)
 
         # next, before processing the request, let's check that the id is valid, and if not 404 the client
         if not ss.exists(id):
@@ -389,10 +394,10 @@ class Container(SwordHttpHandler):
         """
         # authenticate
         auth = self.authenticate(web)
-        if not auth:
+        if auth is None:
             return
 
-        # if we get here authentication was successful and we carry on
+        # if we get here authentication was successful and we carry on (we don't care who authenticated)
         ss = SWORDServer()
         spec = SWORDSpec()
 
@@ -437,7 +442,7 @@ class Container(SwordHttpHandler):
         """
         # authenticate
         auth = self.authenticate(web)
-        if not auth:
+        if auth is None:
             return
 
         # if we get here authentication was successful and we carry on
@@ -445,24 +450,23 @@ class Container(SwordHttpHandler):
         spec = SWORDSpec()
 
         # take the HTTP request and extract a Deposit object from it
-        deposit = spec.get_deposit(web)
+        deposit = spec.get_deposit(web, auth)
         result = ss.deposit_existing(id, deposit)
 
         if result is None:
             # we couldn't find the id
             return web.notfound()
             
-        # unless this is an error, the content type is an atom entry
-        web.header("Content-Type", "application/atom+xml;type=entry")
+        # created, accepted or error
         if result.created:
+            web.header("Content-Type", "application/atom+xml;type=entry")
             web.ctx.status = "201 Created"
             return result.receipt
         elif result.accepted:
+            web.header("Content-Type", "application/atom+xml;type=entry")
             web.ctx.status = "202 Accepted"
             return result.receipt
         else:
-            # if it turns out to be an error, re-write the content-type header
-            # FIXME: is this how it works, or do we end up with two Content-Type headers?
             web.header("Content-Type", "text/xml")
             web.ctx.status = result.error_code
             return result.error
@@ -476,13 +480,13 @@ class Container(SwordHttpHandler):
         """
         # authenticate
         auth = self.authenticate(web)
-        if not auth:
+        if auth is None:
             return
 
         # if we get here authentication was successful and we carry on
         ss = SWORDServer()
         spec = SWORDSpec()
-        delete = spec.get_delete(web.ctx.environ)
+        delete = spec.get_delete(web.ctx.environ, auth)
 
         # next, before processing the request, let's check that the id is valid, and if not 404 the client
         if not ss.exists(id):
@@ -810,6 +814,10 @@ class ContentNegotiator(object):
 # These classes are used as the glue between the web.py web interface layer and the underlying sword server, allowing
 # them to exchange messages agnostically to the interface
 
+class Auth(object):
+    def __init__(self, by, obo=None):
+        self.by = by
+        self.obo = obo
 
 class SWORDRequest(object):
     """
@@ -828,6 +836,7 @@ class SWORDRequest(object):
         self.packaging = "http://purl.org/net/sword/package/default"
         self.in_progress = False
         self.suppress_metadata = False
+        self.auth = None
 
     def set_by_header(self, key, value):
         """
@@ -942,7 +951,9 @@ class SWORDSpec(object):
             "HTTP_X_ON_BEHALF_OF", "HTTP_X_PACKAGING", "HTTP_X_IN_PROGRESS", "HTTP_X_SUPPRESS_METADATA"
         ]
 
-    def get_deposit(self, web):
+        self.error_content_uri = "http://purl.org/net/sword/error/ErrorContent"
+
+    def get_deposit(self, web, auth=None):
         """
         Take a web.py web object and extract from it the parameters and content required for a SWORD deposit.  This
         includes determining whether this is an Atom Multipart request or not, and extracting the atom/payload where
@@ -973,6 +984,8 @@ class SWORDSpec(object):
             if head == "HTTP_CONTENT_DISPOSITION":
                 d.filename = self.extract_filename(dict[head])
 
+        # now just attach the authentication data and return
+        d.auth = auth
         return d
 
     def extract_filename(self, cd):
@@ -981,7 +994,7 @@ class SWORDSpec(object):
         # it down
         return cd[cd.find("filename=") + len("filename="):cd.find(";", cd.find("filename=")) if cd.find(";", cd.find("filename=")) > -1 else len(cd)]
 
-    def get_delete(self, dict):
+    def get_delete(self, dict, auth=None):
         """
         Take a web.py web object and extract from it the parameters and content required for a SWORD delete request.
         It mainly extracts the HTTP headers which are relevant to delete, and for those not supplied provides thier
@@ -994,6 +1007,8 @@ class SWORDSpec(object):
             if head in self.sword_headers:
                 d.set_by_header(head, dict[head])
 
+        # now just attach the authentication data and return
+        d.auth = auth
         return d
 
 class SWORDServer(object):
@@ -1020,6 +1035,7 @@ class SWORDServer(object):
         self.cmap = {None: self.ns.ATOM_NS}
         self.drmap = {None: self.ns.ATOM_NS, "sword" : self.ns.SWORD_NS}
         self.smap = {"rdf" : self.ns.RDF_NS, "ore" : self.ns.ORE_NS, "sword" : self.ns.SWORD_NS}
+        self.emap = {"sword" : self.ns.SWORD_NS, "atom" : self.ns.ATOM_NS}
 
     def exists(self, oid):
         """
@@ -1117,6 +1133,15 @@ class SWORDServer(object):
         -deposit:       the DepositRequest object to be processed
         Returns a DepositResponse object which will contain the Deposit Receipt or a SWORD Error
         """
+        # check for standard possible errors, and throw if appropriate
+        if deposit.packaging == self.configuration.error_content_package:
+            spec = SWORDSpec()
+            dr = DepositResponse()
+            error_doc = self.sword_error(spec.error_content_uri)
+            dr.error = error_doc
+            dr.error_code = "400 Bad Request"
+            return dr
+
         # does the collection directory exist?  If not, we can't do a deposit
         if not self.dao.collection_exists(collection):
             return None
@@ -1149,7 +1174,9 @@ class SWORDServer(object):
         s = Statement()
         s.aggregation_uri = content_uri
         s.rem_uri = edit_uri
-        s.original_deposit(deposit_uri, datetime.now(), deposit.packaging)
+        by = deposit.auth.by if deposit.auth is not None else None
+        obo = deposit.auth.obo if deposit.auth is not None else None
+        s.original_deposit(deposit_uri, datetime.now(), deposit.packaging, by, obo)
         s.in_progress = deposit.in_progress
 
         # store the statement by itself
@@ -1241,7 +1268,9 @@ class SWORDServer(object):
         s = Statement()
         s.aggregation_uri = content_uri
         s.rem_uri = edit_uri
-        s.original_deposit(deposit_uri, datetime.now(), deposit.packaging)
+        by = deposit.auth.by if deposit.auth is not None else None
+        obo = deposit.auth.obo if deposit.auth is not None else None
+        s.original_deposit(deposit_uri, datetime.now(), deposit.packaging, by, obo)
         s.in_progress = deposit.in_progress
 
         # store the statement by itself
@@ -1363,7 +1392,9 @@ class SWORDServer(object):
         s = self.dao.load_statement(collection, id)
 
         # add the new deposit
-        s.original_deposit(deposit_uri, datetime.now(), deposit.packaging)
+        by = deposit.auth.by if deposit.auth is not None else None
+        obo = deposit.auth.obo if deposit.auth is not None else None
+        s.original_deposit(deposit_uri, datetime.now(), deposit.packaging, by, obo)
         s.in_progress = deposit.in_progress
 
         # store the statement by itself
@@ -1482,6 +1513,10 @@ class SWORDServer(object):
         content.set("type", "application/zip")
         content.set("src", cont_uri)
 
+        # treatment
+        treatment = etree.SubElement(entry, self.ns.SWORD + "treatment")
+        treatment.text = "Treatment description"
+
         # FIXME: this is a proposal for how to possibly deal with announcing which package formats
         # can be content negotiated for.  Basically we allow for multiple sword:package elements
         # which will tell people what they can content negotiate for
@@ -1502,6 +1537,33 @@ class SWORDServer(object):
         # now finally embed the statement as foreign markup and return
         xml = statement.get_xml()
         entry.append(xml)
+        return etree.tostring(entry, pretty_print=True)
+
+    def sword_error(self, uri):
+        entry = etree.Element(self.ns.SWORD + "error", nsmap=self.emap)
+        entry.set("href", uri)
+
+        title = etree.SubElement(entry, self.ns.ATOM + "title")
+        title.text = "ERROR: " + uri
+
+        # Date last updated (i.e. NOW)
+        updated = etree.SubElement(entry, self.ns.ATOM + "updated")
+        updated.text = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        # Generator - identifier for this server software
+        generator = etree.SubElement(entry, self.ns.ATOM + "generator")
+        generator.set("uri", "http://www.swordapp.org/sss")
+        generator.set("version", "1.0")
+
+        # Summary field from metadata
+        summary = etree.SubElement(entry, self.ns.ATOM + "summary")
+        summary.set("type", "text")
+        summary.text = "Error Description: " + uri
+
+        # treatment
+        treatment = etree.SubElement(entry, self.ns.SWORD + "treatment")
+        treatment.text = "processing failed"
+
         return etree.tostring(entry, pretty_print=True)
 
 class Statement(object):
@@ -1538,7 +1600,7 @@ class Statement(object):
     def __str__(self):
         return str(self.aggregation_uri) + ", " + str(self.rem_uri) + ", " + str(self.original_deposits)
         
-    def original_deposit(self, uri, deposit_time, packaging_format):
+    def original_deposit(self, uri, deposit_time, packaging_format, by, obo):
         """
         Add an original deposit to the statement
         Args:
@@ -1546,7 +1608,7 @@ class Statement(object):
         - deposit_time:     When the deposit was originally made
         - packaging_format:     The package format of the deposit, as supplied in the X-Packaging header
         """
-        self.original_deposits.append((uri, deposit_time, packaging_format))
+        self.original_deposits.append((uri, deposit_time, packaging_format, by, obo))
 
     def load(self, filepath):
         """
@@ -1558,6 +1620,8 @@ class Statement(object):
         for desc in rdf.getchildren():
             packaging = None
             depositedOn = None
+            deposit_by = None
+            deposit_obo = None
             about = desc.get(self.ns.RDF + "about")
             for element in desc.getchildren():
                 if element.tag == self.ns.ORE + "describes":
@@ -1572,8 +1636,12 @@ class Statement(object):
                 if element.tag == self.ns.SWORD + "depositedOn":
                     deposited = element.text
                     depositedOn = datetime.strptime(deposited, "%Y-%m-%dT%H:%M:%SZ")
+                if element.tag == self.ns.SWORD + "depositedBy":
+                    deposit_by = element.text
+                if element.tag == self.ns.SWORD + "depositedOnBehalfOf":
+                    deposit_obo = element.text
             if packaging is not None:
-                self.original_deposit(about, depositedOn, packaging)
+                self.original_deposit(about, depositedOn, packaging, deposit_by, deposit_obo)
 
     def serialise(self):
         """
@@ -1605,7 +1673,7 @@ class Statement(object):
         idb.set(self.ns.RDF + "resource", self.rem_uri)
 
         # Create ore:aggregates and sword:originalDeposit relations for the original deposits
-        for (uri, datestamp, format) in self.original_deposits:
+        for (uri, datestamp, format, by, obo) in self.original_deposits:
             # standard ORE aggregates statement
             aggregates = etree.SubElement(description, self.ns.ORE + "aggregates")
             aggregates.set(self.ns.RDF + "resource", uri)
@@ -1621,7 +1689,7 @@ class Statement(object):
 
         # Build the Description elements for the original deposits, with their sword:depositedOn and sword:packaging
         # relations
-        for (uri, datestamp, format_uri) in self.original_deposits:
+        for (uri, datestamp, format_uri, by, obo) in self.original_deposits:
             desc = etree.SubElement(rdf, self.ns.RDF + "Description")
             desc.set(self.ns.RDF + "about", uri)
 
@@ -1631,6 +1699,15 @@ class Statement(object):
             deposited = etree.SubElement(desc, self.ns.SWORD + "depositedOn")
             deposited.set(self.ns.RDF + "datatype", "http://www.w3.org/2001/XMLSchema#dateTime")
             deposited.text = datestamp.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            deposit_by = etree.SubElement(desc, self.ns.SWORD + "depositedBy")
+            deposit_by.set(self.ns.RDF + "datatype", "http://www.w3.org/2001/XMLSchema#string")
+            deposit_by.text = by
+
+            if obo is not None:
+                deposit_obo = etree.SubElement(desc, self.ns.SWORD + "depositedOnBehalfOf")
+                deposit_obo.set(self.ns.RDF + "datatype", "http://www.w3.org/2001/XMLSchema#string")
+                deposit_obo.text = obo
 
         # finally do a description for the state
         sdesc = etree.SubElement(rdf, self.ns.RDF + "Description")
