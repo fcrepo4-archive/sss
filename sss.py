@@ -4,7 +4,7 @@ __version__ = "0.1"
 __author__ = ["Richard Jones <richard@oneoverzero.com>"]
 __license__ = "public domain"
 
-import web, uuid, os, re, base64, hashlib
+import web, uuid, os, re, base64, hashlib, urllib
 from lxml import etree
 from datetime import datetime
 from zipfile import ZipFile
@@ -42,8 +42,12 @@ class Configuration(object):
         # What packaging formats should the sword:acceptPackaging element in the Service Document support
         # The tuple is the URI of the format and your desired "q" value
         self.sword_accept_package = [
+                ("http://purl.org/net/sword/package/default", "1.0"),
                 ("http://purl.org/net/sword/package/METSDSpaceSIP", "1.0")
             ]
+
+        # maximum upload size to be allowed, in bytes (this default is 16Mb)
+        self.max_upload_size = 16777216
 
         # list of package formats that SSS can provide when retrieving the Media Resource
         self.sword_disseminate_package = [
@@ -67,6 +71,10 @@ class Configuration(object):
         # supply this header in the X-Packaging header to generate a http://purl.org/net/sword/error/ErrorContent
         # sword error
         self.error_content_package = "http://purl.org/net/sword/package/error"
+
+        # we can turn off updates and deletes in order to examine the behaviour of Method Not Allowed errors
+        self.allow_update = True
+        self.allow_delete = True
 
 class Namespaces(object):
     """
@@ -104,6 +112,7 @@ class Namespaces(object):
 #
 urls = (
     '/sd-uri', 'ServiceDocument',               # From which to retrieve the service document
+    '/sd-uri/(.+)', 'ServiceDocument',          # for sub-service documents
     '/col-uri/(.+)', 'Collection',              # Representing a Collection as listed in the service document
     '/cont-uri/(.+)', 'MediaResourceContent',   # The URI used in atom:content@src
     '/em-uri/(.+)', 'MediaResource',            # The URI used in atom:link@rel=edit-media
@@ -161,7 +170,7 @@ class ServiceDocument(SwordHttpHandler):
     """
     Handle all requests for Service documents (requests to SD-URI)
     """
-    def GET(self):
+    def GET(self, sub=None):
         """ GET the service document - returns an XML document """
 
         # authenticate
@@ -179,7 +188,8 @@ class ServiceDocument(SwordHttpHandler):
         # if we get here authentication was successful and we carry on (we don't care who authenticated)
         ss = SWORDServer()
         web.header("Content-Type", "text/xml")
-        return ss.service_document()
+        use_sub = True if sub is None else False
+        return ss.service_document(use_sub)
 
 class Collection(SwordHttpHandler):
     """
@@ -335,6 +345,16 @@ class MediaResource(MediaResourceContent):
         - id:   the ID of the media resource as specified in the URL
         Returns a Deposit Receipt
         """
+        # find out if update is allowed
+        cfg = Configuration()
+        if not cfg.allow_update:
+            spec = SWORDSpec()
+            ss = SWORDServer()
+            error = ss.sword_error(spec.error_method_not_allowed_uri, "You can't do this right now, sorry")
+            web.header("Content-Type", "text/xml")
+            web.ctx.status = "405 Method Not Allowed"
+            return error
+
         # authenticate
         auth = self.authenticate(web)
         if not auth.success():
@@ -373,7 +393,7 @@ class MediaResource(MediaResourceContent):
         # created, accepted or error
         if result.created:
             web.header("Content-Type", "application/atom+xml;type=entry")
-            web.ctx.status = "201 Created"
+            web.ctx.status = "200 OK" # notice that this is different from the POST as per AtomPub
             return result.receipt
         elif result.accepted:
             web.header("Content-Type", "application/atom+xml;type=entry")
@@ -392,6 +412,16 @@ class MediaResource(MediaResourceContent):
         - id:   the ID of the object to have its content removed as per the requested URI
         Return a Deposit Receipt
         """
+        # find out if delete is allowed
+        cfg = Configuration()
+        if not cfg.allow_delete:
+            spec = SWORDSpec()
+            ss = SWORDServer()
+            error = ss.sword_error(spec.error_method_not_allowed_uri, "You can't do this right now, sorry")
+            web.header("Content-Type", "text/xml")
+            web.ctx.status = "405 Method Not Allowed"
+            return error
+
         # authenticate
         auth = self.authenticate(web)
         if not auth.success():
@@ -503,6 +533,16 @@ class Container(SwordHttpHandler):
         - id:    The ID of the container as contained in the URL
         Returns a Deposit Receipt
         """
+        # find out if update is allowed
+        cfg = Configuration()
+        if not cfg.allow_update:
+            spec = SWORDSpec()
+            ss = SWORDServer()
+            error = ss.sword_error(spec.error_method_not_allowed_uri, "You can't do this right now, sorry")
+            web.header("Content-Type", "text/xml")
+            web.ctx.status = "405 Method Not Allowed"
+            return error
+
         # authenticate
         auth = self.authenticate(web)
         if not auth.success():
@@ -538,10 +578,61 @@ class Container(SwordHttpHandler):
         # created, accepted or error
         if result.created:
             web.header("Content-Type", "application/atom+xml;type=entry")
-            web.ctx.status = "201 Created"
+            web.ctx.status = "200 OK"
             return result.receipt
         elif result.accepted:
             web.header("Content-Type", "application/atom+xml;type=entry")
+            web.ctx.status = "202 Accepted"
+            return result.receipt
+        else:
+            web.header("Content-Type", "text/xml")
+            web.ctx.status = result.error_code
+            return result.error
+
+    def PUT(self, id):
+        """
+        PUT a new Entry over the existing entry
+        """
+        # authenticate
+        auth = self.authenticate(web)
+        if not auth.success():
+            if auth.target_owner_unknown:
+                spec = SWORDSpec()
+                ss = SWORDServer()
+                error = ss.sword_error(spec.error_target_owner_unknown_uri, auth.obo)
+                web.header("Content-Type", "text/xml")
+                web.ctx.status = "401 Unauthorized"
+                return error
+            return
+
+        # if we get here authentication was successful and we carry on
+        ss = SWORDServer()
+        spec = SWORDSpec()
+
+        # check the validity of the request
+        invalid = spec.validate_deposit_request(web)
+        if invalid is not None:
+            error = ss.sword_error(spec.error_bad_request_uri, invalid)
+            web.header("Content-Type", "text/xml")
+            web.ctx.status = "400 Bad Request"
+            return error
+
+        # take the HTTP request and extract a Deposit object from it
+        deposit = spec.get_deposit(web, auth, atom_only=True)
+        result = ss.update_metadata(id, deposit)
+
+        if result is None:
+            return web.notfound()
+
+        # created, accepted, or error
+        if result.created:
+            web.header("Content-Type", "application/atom+xml;type=entry")
+            web.header("Location", result.location)
+            web.ctx.status = "200 OK"
+            return result.receipt
+        elif result.accepted:
+            web.header("Content-Type", "application/atom+xml;type=entry")
+            web.header("Location", result.location)
             web.ctx.status = "202 Accepted"
             return result.receipt
         else:
@@ -556,6 +647,16 @@ class Container(SwordHttpHandler):
         - id:   the ID of the container
         Returns nothing, as there is nothing to return (204 No Content)
         """
+        # find out if update is allowed
+        cfg = Configuration()
+        if not cfg.allow_delete:
+            spec = SWORDSpec()
+            ss = SWORDServer()
+            error = ss.sword_error(spec.error_method_not_allowed_uri, "You can't do this right now, sorry")
+            web.header("Content-Type", "text/xml")
+            web.ctx.status = "405 Method Not Allowed"
+            return error
+
         # authenticate
         auth = self.authenticate(web)
         if not auth.success():
@@ -595,7 +696,6 @@ class Container(SwordHttpHandler):
             web.ctx.status = result.error_code
             return result.error
         else:
-            web.header("Content-Type", "application/atom+xml;type=entry")
             web.ctx.status = "204 No Content"
             return
 
@@ -936,6 +1036,7 @@ class SWORDRequest(object):
         self.suppress_metadata = False
         self.auth = None
         self.content_md5 = None
+        self.slug = None
 
     def set_by_header(self, key, value):
         """
@@ -954,6 +1055,8 @@ class SWORDRequest(object):
             self.suppress_metadata = (value.strip() == "true")
         elif key == "HTTP_CONTENT_MD5":
             self.content_md5 = value
+        elif key == "HTTP_SLUG":
+            self.slug = value
 
 class DepositRequest(SWORDRequest):
     """
@@ -1050,7 +1153,7 @@ class SWORDSpec(object):
         # aren't the real HTTP header names - see the spec)
         self.sword_headers = [
             "HTTP_X_ON_BEHALF_OF", "HTTP_X_PACKAGING", "HTTP_X_IN_PROGRESS", "HTTP_X_SUPPRESS_METADATA",
-            "HTTP_CONTENT_MD5"
+            "HTTP_CONTENT_MD5", "HTTP_SLUG"
         ]
 
         self.error_content_uri = "http://purl.org/net/sword/error/ErrorContent"
@@ -1058,9 +1161,9 @@ class SWORDSpec(object):
         self.error_bad_request_uri = "http://purl.org/net/sword/error/ErrorBadRequest"
         self.error_target_owner_unknown_uri = "http://purl.org/net/sword/error/TargetOwnerUnknown"
         self.error_mediation_not_allowed_uri = "http://purl.org/net/sword/error/MediationNotAllowed"
+        self.error_method_not_allowed_uri = "http://purl.org/net/sword/error/MethodNotAllowed"
 
     def validate_deposit_request(self, web, allow_multipart=True):
-        print str(allow_multipart)
         dict = web.ctx.environ
 
         # get each of the allowed SWORD headers that can be validated and see if they do
@@ -1104,7 +1207,7 @@ class SWORDSpec(object):
         # validates
         return None
 
-    def get_deposit(self, web, auth=None):
+    def get_deposit(self, web, auth=None, atom_only=False):
         """
         Take a web.py web object and extract from it the parameters and content required for a SWORD deposit.  This
         includes determining whether this is an Atom Multipart request or not, and extracting the atom/payload where
@@ -1121,8 +1224,12 @@ class SWORDSpec(object):
             # does not equal a ZIP file.  Have to come back to this and figure out what is best to do
             d.content = webin['payload']
         else:
-            # if this wasn't a multipart, then the data is in web.data()
-            d.content = web.data()
+            # if this wasn't a multipart, then the data is in web.data().  This could be a binary deposit or
+            # an atom entry deposit - reply on the passed argument to determine which
+            if atom_only:
+                d.atom = web.data()
+            else:
+                d.content = web.data()
 
         # now go through the headers and populate the Deposit object
         dict = web.ctx.environ
@@ -1195,7 +1302,7 @@ class SWORDServer(object):
         collection, id = oid.split("/", 1)
         return self.dao.collection_exists(collection) and self.dao.container_exists(collection, id)
 
-    def service_document(self):
+    def service_document(self, use_sub=False):
         """
         Construct the Service Document.  This takes the set of collections that are in the store, and places them in
         an Atom Service document as the individual entries
@@ -1206,6 +1313,10 @@ class SWORDServer(object):
         # version element
         version = etree.SubElement(service, self.ns.SWORD + "version")
         version.text = "2.0" # SWORD 2.0!  Oh yes!
+
+        # max upload size
+        mus = etree.SubElement(service, self.ns.SWORD + "maxUploadSize")
+        mus.text = str(self.configuration.max_upload_size)
 
         # workspace element
         workspace = etree.SubElement(service, self.ns.APP + "workspace")
@@ -1250,6 +1361,11 @@ class SWORDServer(object):
                 acceptPackaging.text = format
                 acceptPackaging.set("q", q)
 
+            # provide a sub service element if appropriate
+            if use_sub:
+                subservice = etree.SubElement(collection, self.ns.SWORD + "service")
+                subservice.text = self.um.sd_uri(True)
+
         # pretty print and return
         return etree.tostring(service, pretty_print=True)
 
@@ -1293,8 +1409,8 @@ class SWORDServer(object):
         if not self.dao.collection_exists(collection):
             return None
 
-        # create us a new container
-        id = self.dao.create_container(collection)
+        # create us a new container, passing in the Slug value (which may be None) as the proposed id
+        id = self.dao.create_container(collection, deposit.slug)
 
         # store the incoming atom document if necessary
         if deposit.atom is not None:
@@ -1309,7 +1425,7 @@ class SWORDServer(object):
         packager.ingest(collection, id, fn, deposit.suppress_metadata)
 
         # An identifier which will resolve to the package just deposited
-        deposit_uri = self.um.part_uri(collection, id, deposit.filename)
+        deposit_uri = self.um.part_uri(collection, id, fn)
 
         # the Cont-URI
         content_uri = self.um.cont_uri(collection, id)
@@ -1408,7 +1524,7 @@ class SWORDServer(object):
         packager.ingest(collection, id, fn, deposit.suppress_metadata)
 
         # An identifier which will resolve to the package just deposited
-        deposit_uri = self.um.part_uri(collection, id, deposit.filename)
+        deposit_uri = self.um.part_uri(collection, id, fn)
 
         # the Cont-URI
         content_uri = self.um.cont_uri(collection, id)
@@ -1548,7 +1664,7 @@ class SWORDServer(object):
         packager.ingest(collection, id, fn, deposit.suppress_metadata)
 
         # An identifier which will resolve to the package just deposited
-        deposit_uri = self.um.part_uri(collection, id, deposit.filename)
+        deposit_uri = self.um.part_uri(collection, id, fn)
 
         # load the statement
         s = self.dao.load_statement(collection, id)
@@ -1566,6 +1682,46 @@ class SWORDServer(object):
         receipt = self.deposit_receipt(collection, id, deposit, s, None)
 
         # store the deposit receipt also
+        self.dao.store_deposit_receipt(collection, id, receipt)
+
+        # finally, assemble the deposit response and return
+        dr = DepositResponse()
+        dr.receipt = receipt
+        if deposit.in_progress:
+            dr.accepted = True
+        else:
+            dr.created = True
+
+        return dr
+
+    def update_metadata(self, oid, deposit):
+        # check for standard possible errors, and throw if appropriate
+        er = self.check_mediated_error(deposit)
+        if er is not None:
+            return er
+
+        collection, id = self.um.interpret_oid(oid)
+
+        # does the collection directory exist?  If not, we can't do a deposit
+        if not self.exists(oid):
+            return None
+
+        # now just store the atom file
+        self.dao.store_atom(collection, id, deposit.atom)
+
+        # now that we have stored the atom, we can invoke a package ingester over the top to extract
+        # all the metadata and any files we want.  Notice that we override suppress_metadata, as there's
+        # no valid uses of X-Suppress-Metadata during a metadata update!
+        packager = self.configuration.package_ingesters[deposit.packaging]()
+        packager.ingest(collection, id, None, False)
+
+        # load the statement
+        s = self.dao.load_statement(collection, id)
+
+        # create the deposit receipt
+        receipt = self.deposit_receipt(collection, id, deposit, s, None)
+
+        # store the deposit receipt
         self.dao.store_deposit_receipt(collection, id, receipt)
 
         # finally, assemble the deposit response and return
@@ -1691,6 +1847,10 @@ class SWORDServer(object):
         treatment = etree.SubElement(entry, self.ns.SWORD + "treatment")
         treatment.text = "Treatment description"
 
+        # verbose description
+        vd = etree.SubElement(entry, self.ns.SWORD + "verboseDescription")
+        vd.text = "SSS has done this, that and the other to process the deposit"
+
         # Edit-URI
         editlink = etree.SubElement(entry, self.ns.ATOM + "link")
         editlink.set("rel", "edit")
@@ -1740,6 +1900,18 @@ class SWORDServer(object):
         # have we been asked to do a mediated delete, when this is not allowed?
         if delete.auth is not None:
             if delete.auth.obo is not None and not self.configuration.mediation:
+                spec = SWORDSpec()
+                dr = DepositResponse()
+                error_doc = self.sword_error(spec.error_mediation_not_allowed_uri)
+                dr.error = error_doc
+                dr.error_code = "412 Precondition Failed"
+                return dr
+        return None
+
+    def check_mediated_error(self, deposit):
+        # have we been asked to do a mediated deposit, when this is not allowed?
+        if deposit.auth is not None:
+            if deposit.auth.obo is not None and not self.configuration.mediation:
                 spec = SWORDSpec()
                 dr = DepositResponse()
                 error_doc = self.sword_error(spec.error_mediation_not_allowed_uri)
@@ -1945,6 +2117,12 @@ class URIManager(object):
         """ The url for the HTML splash page of an object in the store """
         return self.configuration.base_url + "html/" + collection + "/" + id
 
+    def sd_uri(self, sub=True):
+        uri = self.configuration.base_url + "sd-uri"
+        if sub:
+            uri += "/" + str(uuid.uuid4())
+        return uri
+
     def col_uri(self, id):
         """ The url for a collection on the server """
         return self.configuration.base_url + "col-uri/" + id
@@ -1963,7 +2141,7 @@ class URIManager(object):
 
     def part_uri(self, collection, id, filename):
         """ The URL for accessing the parts of an object in the store """
-        return self.configuration.base_url + "part-uri/" + collection + "/" + id + "/" + filename
+        return self.configuration.base_url + "part-uri/" + collection + "/" + id + "/" + urllib.quote(filename)
 
     def atom_id(self, collection, id):
         """ An ID to use for Atom Entries """
@@ -2036,7 +2214,7 @@ class DAO(object):
         fpath = os.path.join(self.configuration.store_dir, collection, id, filename)
         return os.path.exists(fpath)
 
-    def create_container(self, collection):
+    def create_container(self, collection, id=None):
         """
         Create a container in the specified collection.  The container will be assigned a random UUID as its
         identifier.
@@ -2045,7 +2223,9 @@ class DAO(object):
         Returns the ID of the container
         """
         # invent an identifier for the item, and create its directory
-        id = str(uuid.uuid4())
+        # we may have been passed an ID to use
+        if id is None:
+            id = str(uuid.uuid4())
         odir = os.path.join(self.configuration.store_dir, collection, id)
         if not os.path.exists(odir):
             os.makedirs(odir)
