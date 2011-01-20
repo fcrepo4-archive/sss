@@ -105,6 +105,10 @@ class Namespaces(object):
         self.ORE_NS = "http://www.openarchives.org/ore/terms/"
         self.ORE = "{%s}" % self.ORE_NS
 
+        # ORE ATOM
+        self.ORE_ATOM_NS = "http://www.openarchives.org/ore/atom/"
+        self.ORE_ATOM = "{%s}" % self.ORE_ATOM_NS
+
 # SWORD URLS
 #############################################################################
 # Define our URL mappings for the web service.  We are using URL parts immediately after the base of the service
@@ -117,6 +121,8 @@ urls = (
     '/cont-uri/(.+)', 'MediaResourceContent',   # The URI used in atom:content@src
     '/em-uri/(.+)', 'MediaResource',            # The URI used in atom:link@rel=edit-media
     '/edit-uri/(.+)', 'Container',              # The URI used in atom:link@rel=edit
+
+    '/agg-uri/(.+)', 'Aggregation',              # The URI used to represent the ORE aggregation
 
     # NOT PART OF SWORD: sword says nothing about how components of the item are identified, but here we use the
     # PART-URI prefix to denote parts of the object in the server
@@ -699,6 +705,16 @@ class Container(SwordHttpHandler):
             web.ctx.status = "204 No Content"
             return
 
+class Aggregation(SwordHttpHandler):
+    def GET(self, id):
+        # in this case we just redirect back to the Edit-URI with a 303 See Other
+        um = URIManager()
+        col, oid = um.interpret_oid(id)
+        edit_uri = um.edit_uri(col, oid)
+        web.ctx.status = "303 See Other"
+        web.header("Content-Location", edit_uri)
+        return
+
 class WebUI(SwordHttpHandler):
     """
     Class to provide a basic web interface to the store for convenience
@@ -723,7 +739,7 @@ class ContentType(object):
     """
     Class to represent a content type requested through content negotiation
     """
-    def __init__(self, type=None, subtype=None, params=None):
+    def __init__(self, type=None, subtype=None, params=None, packaging=None):
         """
         Properties:
         type    - the main type of the content.  e.g. in text/html, the type is "text"
@@ -737,6 +753,7 @@ class ContentType(object):
         self.type = type
         self.subtype = subtype
         self.params = params
+        self.packaging = packaging
 
     def mimetype(self):
         """
@@ -746,6 +763,9 @@ class ContentType(object):
         if self.params is not None:
             mt += ";" + self.params
         return mt
+
+    def media_format(self):
+        pass
 
     def matches(self, other):
         """
@@ -787,15 +807,113 @@ class ContentNegotiator(object):
         self.default_type = None
         self.default_subtype = None
         self.default_params = None
+        self.default_packaging = None
 
     def get_accept(self, dict):
         """
         Get the Accept header out of the web.py HTTP dictionary.  Return None if no accept header exists
         """
-        if not dict.has_key("HTTP_ACCEPT"):
-            return None
+        # Prefer the Accept-Media-Format header, fall back to Accept
+        if dict.has_key("HTTP_ACCEPT_MEDIA_FORMAT"):
+            return dict["HTTP_ACCEPT_MEDIA_FORMAT"], True
+        elif dict.has_key("HTTP_ACCEPT"):
+            return dict["HTTP_ACCEPT"], False
+        return None, False
 
-        return dict["HTTP_ACCEPT"]
+    def analyse_media_format(self, accept):
+        # FIXME: we need to somehow handle q=0.0 in here and in other related methods
+        """
+        Analyse the Accept-Media-Format header string from the HTTP headers and return a structured dictionary with each
+        content types grouped by their common q values, thus:
+
+        dict = {
+            1.0 : [<ContentType>, <ContentType>],
+            0.8 : [<ContentType],
+            0.5 : [<ContentType>, <ContentType>]
+        }
+
+        This method will guarantee that ever content type has some q value associated with it, even if this was not
+        supplied in the original Accept header; it will be inferred based on the rules of content negotiation
+        """
+        # accept headers are a list of content types and q values, in a comma separated list
+        parts = accept.split(",")
+
+        # set up some registries for the coming analysis.  unsorted will hold each part of the accept header following
+        # its analysis, but without respect to its position in the preferences list.  highest_q and counter will be
+        # recorded during this first run so that we can use them to sort the list later
+        unsorted = []
+        highest_q = 0
+        counter = 0
+
+        # go through each possible content type and analyse it along with its q value
+        for part in parts:
+        # count the part number that we are working on, starting from 1
+            counter += 1
+
+            # the components of the part can be "type;params;q" "type;params", "type;q" or just "type"
+            components = part.split(";")
+
+            # the first part is always the type (see above comment)
+            type = components[0].strip()
+
+            # create some default values for the other parts.  If there is no params, we will use None, if there is
+            # no q we will use a negative number multiplied by the position in the list of this part.  This allows us
+            # to later see the order in which the parts with no q value were listed, which is important
+            params = None
+            q = -1 * counter
+
+            # There are then 3 possibilities remaining to check for: "type;q", "type;params" and "type;params;q"
+            # ("type" is already handled by the default cases set up above)
+            if len(components) == 2:
+            # "type;q" or "type;params"
+                if components[1].strip().startswith("q="):
+                # "type;q"
+                    q = components[1].strip()[2:] # strip the "q=" from the start of the q value
+                    # if the q value is the highest one we've seen so far, record it
+                    if int(q) > highest_q:
+                        highest_q = q
+                else:
+                # "type;params"
+                    params = components[1].strip()
+            elif len(components) == 3:
+            # "type;params;q"
+                params = components[1].strip()
+                q = components[1].strip()[2:] # strip the "q=" from the start of the q value
+                # if the q value is the highest one we've seen so far, record it
+                if int(q) > highest_q:
+                    highest_q = q
+
+                # at the end of the analysis we have all of the components with or without their default values, so we
+                # just record the analysed version for the time being as a tuple in the unsorted array
+            unsorted.append((type, params, q))
+
+        # once we've finished the analysis we'll know what the highest explicitly requested q will be.  This may leave
+        # us with a gap between 1.0 and the highest requested q, into which we will want to put the content types which
+        # did not have explicitly assigned q values.  Here we calculate the size of that gap, so that we can use it
+        # later on in positioning those elements.  Note that the gap may be 0.0.
+        q_range = 1.0 - highest_q
+
+        # set up a dictionary to hold our sorted results.  The dictionary will be keyed with the q value, and the
+        # value of each key will be an array of ContentType objects (in no particular order)
+        sorted = {}
+
+        # go through the unsorted list
+        for (type, params, q) in unsorted:
+        # break the type into super and sub types for the ContentType constructor
+            supertype, subtype = type.split("/", 1)
+            if q > 0:
+            # if the q value is greater than 0 it was explicitly assigned in the Accept header and we can just place
+            # it into the sorted dictionary
+                self.insert(sorted, q, ContentType(supertype, subtype, params))
+            else:
+            # otherwise, we have to calculate the q value using the following equation which creates a q value "qv"
+            # within "q_range" of 1.0 [the first part of the eqn] based on the fraction of the way through the total
+            # accept header list scaled by the q_range [the second part of the eqn]
+                qv = (1.0 - q_range) + (((-1 * q)/counter) * q_range)
+                self.insert(sorted, qv, ContentType(supertype, subtype, params))
+
+            # now we have a dictionary keyed by q value which we can return
+        return sorted
 
     def analyse_accept(self, accept):
         # FIXME: we need to somehow handle q=0.0 in here and in other related methods
@@ -984,16 +1102,21 @@ class ContentNegotiator(object):
         reached
         """
         # get the accept header if available
-        accept = self.get_accept(dict)
-        print "Accept Header: " + str(accept)
+        accept, media_format = self.get_accept(dict)
+        print "Accept/Accept-Media-Format Header: " + str(accept)
         if accept is None:
             # if it is not available just return the defaults
-            return ContentType(self.default_type, self.default_subtype, self.default_params)
+            return ContentType(self.default_type, self.default_subtype, self.default_params, self.default_packaging)
 
         # get us back a dictionary keyed by q value which tells us the order of preference that the client has
         # requested
-        analysed = self.analyse_accept(accept)
-        print "Analysed Accept: " + str(analysed)
+        analysed = None
+        if media_format:
+            analysed = self.analyse_media_format(accept)
+        else:
+            analysed = self.analyse_accept(accept)
+
+        print "Analysed Accept/Accept-Media-Format: " + str(analysed)
 
         # go through the analysed formats and cross reference them with the acceptable formats
         content_type = self.get_acceptable(analysed, self.acceptable)
@@ -1427,15 +1550,15 @@ class SWORDServer(object):
         # An identifier which will resolve to the package just deposited
         deposit_uri = self.um.part_uri(collection, id, fn)
 
-        # the Cont-URI
-        content_uri = self.um.cont_uri(collection, id)
+        # the aggregation uri
+        agg_uri = self.um.agg_uri(collection, id)
 
         # the Edit-URI
         edit_uri = self.um.edit_uri(collection, id)
 
         # create the initial statement
         s = Statement()
-        s.aggregation_uri = content_uri
+        s.aggregation_uri = agg_uri
         s.rem_uri = edit_uri
         by = deposit.auth.by if deposit.auth is not None else None
         obo = deposit.auth.obo if deposit.auth is not None else None
@@ -1526,15 +1649,15 @@ class SWORDServer(object):
         # An identifier which will resolve to the package just deposited
         deposit_uri = self.um.part_uri(collection, id, fn)
 
-        # the Cont-URI
-        content_uri = self.um.cont_uri(collection, id)
+        # the aggregation uri
+        agg_uri = self.um.agg_uri(collection, id)
 
         # the Edit-URI
         edit_uri = self.um.edit_uri(collection, id)
 
         # create the new statement
         s = Statement()
-        s.aggregation_uri = content_uri
+        s.aggregation_uri = agg_uri
         s.rem_uri = edit_uri
         by = deposit.auth.by if deposit.auth is not None else None
         obo = deposit.auth.obo if deposit.auth is not None else None
@@ -1584,15 +1707,15 @@ class SWORDServer(object):
         # question with regard to how the standard should work.
         self.dao.remove_content(collection, id, delete.suppress_metadata)
 
-        # the Cont-URI
-        content_uri = self.um.cont_uri(collection, id)
+        # the aggregation uri
+        agg_uri = self.um.agg_uri(collection, id)
 
         # the Edit-URI
         edit_uri = self.um.edit_uri(collection, id)
 
         # create the statement
         s = Statement()
-        s.aggregation_uri = content_uri
+        s.aggregation_uri = agg_uri
         s.rem_uri = edit_uri
         s.in_progress = delete.in_progress
 
@@ -1861,9 +1984,17 @@ class SWORDServer(object):
         emlink.set("rel", "edit-media")
         emlink.set("href", em_uri)
 
+        # FIXME: we are toying here with two different possible ways of serialising the resource map
+        #
         # now finally embed the statement as foreign markup and return
-        xml = statement.get_xml()
-        entry.append(xml)
+        # xml = statement.get_rdf_xml()
+        # entry.append(xml)
+        #
+        # move all the child elements of the statement entry into this entry
+        subentry = statement.get_atom_xml()
+        for child in subentry.getchildren():
+            entry.append(child)
+
         return etree.tostring(entry, pretty_print=True)
 
     def sword_error(self, uri, msg=None):
@@ -1985,6 +2116,7 @@ class Statement(object):
         # Namespace map for XML serialisation
         self.ns = Namespaces()
         self.smap = {"rdf" : self.ns.RDF_NS, "ore" : self.ns.ORE_NS, "sword" : self.ns.SWORD_NS}
+        self.asmap = {"oreatom" : self.ns.ORE_ATOM_NS, "atom" : self.ns.ATOM_NS, "rdf" : self.ns.RDF_NS, "ore" : self.ns.ORE_NS, "sword" : self.ns.SWORD_NS}
 
     def __str__(self):
         return str(self.aggregation_uri) + ", " + str(self.rem_uri) + ", " + str(self.original_deposits)
@@ -2036,10 +2168,49 @@ class Statement(object):
         """
         Serialise this statement into an RDF/XML string
         """
-        rdf = self.get_xml()
+        rdf = self.get_rdf_xml()
         return etree.tostring(rdf, pretty_print=True)
 
-    def get_xml(self):
+    def get_atom_xml(self):
+        entry = etree.Element(self.ns.ATOM + "entry", nsmap=self.asmap)
+
+        # link to splash page
+        alt = etree.SubElement(entry, self.ns.ATOM + "link")
+        alt.set("rel", "alternate")
+        alt.set("href", "http://FIXME/ALT/URL/HERE")
+
+        # self reference
+        rel_self = etree.SubElement(entry, self.ns.ATOM + "link")
+        rel_self.set("rel", "self")
+        rel_self.set("href", self.rem_uri)
+
+        # describes
+        rel_desc = etree.SubElement(entry, self.ns.ATOM + "link")
+        rel_desc.set("rel", self.ns.ORE_NS + "describes")
+        rel_desc.set("href", self.aggregation_uri)
+
+        # Aggregation ATOM category
+        cat = etree.SubElement(entry, self.ns.ATOM + "category")
+        cat.set("term", self.ns.ORE_NS + "Aggregation")
+        cat.set("label", "Aggregation")
+        cat.set("scheme", self.ns.ORE_NS)
+
+         # Create aggregations
+        for (uri, datestamp, format, by, obo) in self.original_deposits:
+            aggregates = etree.SubElement(entry, self.ns.ATOM + "link")
+            aggregates.set("rel", self.ns.ORE_NS + "aggregates")
+            aggregates.set("href", uri)
+
+        # now embed the complete resource map into the atom xml document in the
+        # oreatom:triples element
+        triples = etree.SubElement(entry, self.ns.ORE_ATOM + "triples")
+        rdf = self.get_rdf_xml()
+        for child in rdf.getchildren():
+            triples.append(child)
+
+        return entry
+
+    def get_rdf_xml(self):
         """
         Get an lxml Element object back representing this statement
         """
@@ -2142,6 +2313,9 @@ class URIManager(object):
     def part_uri(self, collection, id, filename):
         """ The URL for accessing the parts of an object in the store """
         return self.configuration.base_url + "part-uri/" + collection + "/" + id + "/" + urllib.quote(filename)
+
+    def agg_uri(self, collection, id):
+        return self.configuration.base_url + "agg-uri/" + collection + "/" + id
 
     def atom_id(self, collection, id):
         """ An ID to use for Atom Entries """
