@@ -26,14 +26,14 @@ class Configuration(object):
         self.store_dir = os.path.join(os.getcwd(), "store")
 
         # user details; the user/password pair should be used for HTTP Basic Authentication, and the obo is the user
-        # to use for X-On-Behalf-Of requests.  Set authenticate=False if you want to test the server without caring
+        # to use for On-Behalf-Of requests.  Set authenticate=False if you want to test the server without caring
         # about authentication, set mediation=False if you want to test the server's errors on invalid attempts at
         # mediation
         self.authenticate = True
         self.user = "sword"
         self.password = "sword"
         
-        self.mediation = False
+        self.mediation = True
         self.obo = "obo"
 
         # What media ranges should the app:accept element in the Service Document support
@@ -42,8 +42,9 @@ class Configuration(object):
         # What packaging formats should the sword:acceptPackaging element in the Service Document support
         # The tuple is the URI of the format and your desired "q" value
         self.sword_accept_package = [
-                ("http://purl.org/net/sword/package/default", "1.0"),
-                ("http://purl.org/net/sword/package/METSDSpaceSIP", "1.0")
+                "http://purl.org/net/sword/package/default",
+                "http://purl.org/net/sword/package/binary",
+                "http://purl.org/net/sword/package/METSDSpaceSIP"
             ]
 
         # maximum upload size to be allowed, in bytes (this default is 16Mb)
@@ -57,24 +58,27 @@ class Configuration(object):
         # Supported package format disseminators; for the content type (dictionary key), the associated
         # class will be used to package the content for dissemination
         self.package_disseminators = {
-                "application/zip;swordpackage=http://purl.org/net/sword/package/default" : DefaultDisseminator,
-                "application/zip" : DefaultDisseminator
+                ContentType("application", "zip", None, "http://purl.org/net/sword/package/default").media_format() : DefaultDisseminator,
+                ContentType("application", "zip").media_format() : DefaultDisseminator
             }
 
-        # Supported package format ingesters; for the X-Packaging header (dictionary key), the associated class will
+        # Supported package format ingesters; for the Packaging header (dictionary key), the associated class will
         # be used to unpackage deposited content
         self.package_ingesters = {
                 "http://purl.org/net/sword/package/default" : DefaultIngester,
                 "http://purl.org/net/sword/package/METSDSpaceSIP" : METSDSpaceIngester
             }
 
-        # supply this header in the X-Packaging header to generate a http://purl.org/net/sword/error/ErrorContent
+        # supply this header in the Packaging header to generate a http://purl.org/net/sword/error/ErrorContent
         # sword error
         self.error_content_package = "http://purl.org/net/sword/package/error"
 
         # we can turn off updates and deletes in order to examine the behaviour of Method Not Allowed errors
         self.allow_update = True
         self.allow_delete = True
+
+        # we can turn off deposit receipts, which is allowed by the specification
+        self.return_deposit_receipt = True
 
 class Namespaces(object):
     """
@@ -139,7 +143,7 @@ urls = (
 class SwordHttpHandler(object):
     def authenticate(self, web):
         auth = web.ctx.env.get('HTTP_AUTHORIZATION')
-        obo = web.ctx.env.get("HTTP_X_ON_BEHALF_OF")
+        obo = web.ctx.env.get("HTTP_ON_BEHALF_OF")
 
         cfg = Configuration()
 
@@ -262,18 +266,26 @@ class Collection(SwordHttpHandler):
 
         if result is None:
             return web.notfound()
-        
+
+        cfg = Configuration()
+
         # created, accepted, or error
         if result.created:
             web.header("Content-Type", "application/atom+xml;type=entry")
             web.header("Location", result.location)
             web.ctx.status = "201 Created"
-            return result.receipt
+            if cfg.return_deposit_receipt:
+                return result.receipt
+            else:
+                return
         elif result.accepted:
             web.header("Content-Type", "application/atom+xml;type=entry")
             web.header("Location", result.location)
             web.ctx.status = "202 Accepted"
-            return result.receipt
+            if cfg.return_deposit_receipt:
+                return result.receipt
+            else:
+                return
         else:
             web.header("Content-Type", "text/xml")
             web.ctx.status = result.error_code
@@ -307,12 +319,12 @@ class MediaResourceContent(SwordHttpHandler):
         cn = ContentNegotiator()
 
         # if no Accept header, then we will get this back
-        cn.default_type = "text/html"
+        cn.default_type = "text"
+        cn.default_subtype = "html"
 
-        # The list of acceptable formats (in order of preference).  The tuples list the type and
-        # the parameters section respectively
+        # The list of acceptable formats (in order of preference).
         cn.acceptable = [
-                ContentType("application", "zip", "swordpackage=http://purl.org/net/sword/package/default"),
+                ContentType("application", "zip", None, "http://purl.org/net/sword/package/default"),
                 ContentType("application", "zip"),
                 ContentType("text", "html")
             ]
@@ -322,7 +334,7 @@ class MediaResourceContent(SwordHttpHandler):
 
         # did we successfully negotiate a content type?
         if content_type is None:
-            web.ctx.status = "415 Unsupported Media Type"
+            web.ctx.status = "406 Not Acceptable"
             return
         
         # if we did, we can get hold of the media resource
@@ -400,11 +412,17 @@ class MediaResource(MediaResourceContent):
         if result.created:
             web.header("Content-Type", "application/atom+xml;type=entry")
             web.ctx.status = "200 OK" # notice that this is different from the POST as per AtomPub
-            return result.receipt
+            if cfg.return_deposit_receipt:
+                return result.receipt
+            else:
+                return
         elif result.accepted:
             web.header("Content-Type", "application/atom+xml;type=entry")
             web.ctx.status = "202 Accepted"
-            return result.receipt
+            if cfg.return_deposit_receipt:
+                return result.receipt
+            else:
+                return
         else:
             web.header("Content-Type", "text/xml")
             web.ctx.status = result.error_code
@@ -469,7 +487,10 @@ class MediaResource(MediaResourceContent):
             return result.error
         else:
             web.header("Content-Type", "application/atom+xml;type=entry")
-            return result.receipt
+            if cfg.return_deposit_receipt:
+                return result.receipt
+            else:
+                return
 
 class Container(SwordHttpHandler):
     """
@@ -510,7 +531,8 @@ class Container(SwordHttpHandler):
         cn = ContentNegotiator()
 
         # if no Accept header, then we will get this back
-        cn.default_type = "application/atom+xml"
+        cn.default_type = "application"
+        cn.default_subtype = "atom+xml"
         cn.default_params = "type=entry"
 
         # The list of acceptable formats (in order of preference).  The tuples list the type and
@@ -585,11 +607,17 @@ class Container(SwordHttpHandler):
         if result.created:
             web.header("Content-Type", "application/atom+xml;type=entry")
             web.ctx.status = "200 OK"
-            return result.receipt
+            if cfg.return_deposit_receipt:
+                return result.receipt
+            else:
+                return
         elif result.accepted:
             web.header("Content-Type", "application/atom+xml;type=entry")
             web.ctx.status = "202 Accepted"
-            return result.receipt
+            if cfg.return_deposit_receipt:
+                return result.receipt
+            else:
+                return
         else:
             web.header("Content-Type", "text/xml")
             web.ctx.status = result.error_code
@@ -635,12 +663,18 @@ class Container(SwordHttpHandler):
             web.header("Content-Type", "application/atom+xml;type=entry")
             web.header("Location", result.location)
             web.ctx.status = "200 OK"
-            return result.receipt
+            if cfg.return_deposit_receipt:
+                return result.receipt
+            else:
+                return
         elif result.accepted:
             web.header("Content-Type", "application/atom+xml;type=entry")
             web.header("Location", result.location)
             web.ctx.status = "202 Accepted"
-            return result.receipt
+            if cfg.return_deposit_receipt:
+                return result.receipt
+            else:
+                return
         else:
             web.header("Content-Type", "text/xml")
             web.ctx.status = result.error_code
@@ -755,6 +789,15 @@ class ContentType(object):
         self.params = params
         self.packaging = packaging
 
+    def from_mimetype(self, mimetype):
+        # mimetype is of the form <supertype>/<subtype>[;<params>]
+        parts = mimetype.split(";")
+        if len(parts) == 2:
+            self.type, self.subtype = parts[0].split("/", 1)
+            self.params = parts[1]
+        elif len(parts) == 1:
+            self.type, self.subtype = parts[0].split("/", 1)
+
     def mimetype(self):
         """
         Turn the content type into its mimetype representation
@@ -764,10 +807,16 @@ class ContentType(object):
             mt += ";" + self.params
         return mt
 
+    # NOTE: we only use this to construct a canonical form which includes the package to do comparisons over
     def media_format(self):
-        pass
+        mime = self.mimetype()
+        pack = ""
+        if self.packaging is not None:
+            pack = "(packaging=\"" + self.packaging + "\") "
+        mf = "(& (type=\"" + mime + "\") " + pack + ")"
+        return mf
 
-    def matches(self, other):
+    def matches(self, other, packaging_wildcard=False):
         """
         Determine whether this ContentType and the supplied other ContentType are matches.  This includes full equality
         or whether the wildcards (*) which can be supplied for type or subtype properties are in place in either
@@ -779,13 +828,21 @@ class ContentType(object):
         # a wildcard.  For the purposes of convenience we have assumed here that it is, otherwise a request for
         # */* will not match any content type which has parameters
         pmatch = self.params is None or other.params is None or self.params == other.params
-        return tmatch and smatch and pmatch
+
+        # A similar problem exists for packaging.  We allow the user to tell us if packaging should be
+        # wildcard sensitive
+        packmatch = False
+        if packaging_wildcard:
+            packmatch = self.packaging is None or other.packaging is None or self.packaging == other.packaging
+        else:
+            packmatch = self.packaging == other.packaging
+        return tmatch and smatch and pmatch and packmatch
 
     def __eq__(self, other):
-        return self.mimetype() == other.mimetype()
+        return self.media_format() == other.media_format()
 
     def __str__(self):
-        return str(self.type) + "/" + str(self.subtype) + ";" + str(self.params)
+        return self.media_format()
 
     def __repr__(self):
         return str(self)
@@ -813,109 +870,16 @@ class ContentNegotiator(object):
         """
         Get the Accept header out of the web.py HTTP dictionary.  Return None if no accept header exists
         """
-        # Prefer the Accept-Media-Format header, fall back to Accept
-        if dict.has_key("HTTP_ACCEPT_MEDIA_FORMAT"):
-            return dict["HTTP_ACCEPT_MEDIA_FORMAT"], True
-        elif dict.has_key("HTTP_ACCEPT"):
-            return dict["HTTP_ACCEPT"], False
-        return None, False
+        if dict.has_key("HTTP_ACCEPT"):
+            return dict["HTTP_ACCEPT"]
+        return None
 
-    def analyse_media_format(self, accept):
-        # FIXME: we need to somehow handle q=0.0 in here and in other related methods
-        """
-        Analyse the Accept-Media-Format header string from the HTTP headers and return a structured dictionary with each
-        content types grouped by their common q values, thus:
+    def get_packaging(self, dict):
+        if dict.has_key('HTTP_PACKAGING'):
+            return dict['HTTP_PACKAGING']
+        return None
 
-        dict = {
-            1.0 : [<ContentType>, <ContentType>],
-            0.8 : [<ContentType],
-            0.5 : [<ContentType>, <ContentType>]
-        }
-
-        This method will guarantee that ever content type has some q value associated with it, even if this was not
-        supplied in the original Accept header; it will be inferred based on the rules of content negotiation
-        """
-        # accept headers are a list of content types and q values, in a comma separated list
-        parts = accept.split(",")
-
-        # set up some registries for the coming analysis.  unsorted will hold each part of the accept header following
-        # its analysis, but without respect to its position in the preferences list.  highest_q and counter will be
-        # recorded during this first run so that we can use them to sort the list later
-        unsorted = []
-        highest_q = 0
-        counter = 0
-
-        # go through each possible content type and analyse it along with its q value
-        for part in parts:
-        # count the part number that we are working on, starting from 1
-            counter += 1
-
-            # the components of the part can be "type;params;q" "type;params", "type;q" or just "type"
-            components = part.split(";")
-
-            # the first part is always the type (see above comment)
-            type = components[0].strip()
-
-            # create some default values for the other parts.  If there is no params, we will use None, if there is
-            # no q we will use a negative number multiplied by the position in the list of this part.  This allows us
-            # to later see the order in which the parts with no q value were listed, which is important
-            params = None
-            q = -1 * counter
-
-            # There are then 3 possibilities remaining to check for: "type;q", "type;params" and "type;params;q"
-            # ("type" is already handled by the default cases set up above)
-            if len(components) == 2:
-            # "type;q" or "type;params"
-                if components[1].strip().startswith("q="):
-                # "type;q"
-                    q = components[1].strip()[2:] # strip the "q=" from the start of the q value
-                    # if the q value is the highest one we've seen so far, record it
-                    if int(q) > highest_q:
-                        highest_q = q
-                else:
-                # "type;params"
-                    params = components[1].strip()
-            elif len(components) == 3:
-            # "type;params;q"
-                params = components[1].strip()
-                q = components[1].strip()[2:] # strip the "q=" from the start of the q value
-                # if the q value is the highest one we've seen so far, record it
-                if int(q) > highest_q:
-                    highest_q = q
-
-                # at the end of the analysis we have all of the components with or without their default values, so we
-                # just record the analysed version for the time being as a tuple in the unsorted array
-            unsorted.append((type, params, q))
-
-        # once we've finished the analysis we'll know what the highest explicitly requested q will be.  This may leave
-        # us with a gap between 1.0 and the highest requested q, into which we will want to put the content types which
-        # did not have explicitly assigned q values.  Here we calculate the size of that gap, so that we can use it
-        # later on in positioning those elements.  Note that the gap may be 0.0.
-        q_range = 1.0 - highest_q
-
-        # set up a dictionary to hold our sorted results.  The dictionary will be keyed with the q value, and the
-        # value of each key will be an array of ContentType objects (in no particular order)
-        sorted = {}
-
-        # go through the unsorted list
-        for (type, params, q) in unsorted:
-        # break the type into super and sub types for the ContentType constructor
-            supertype, subtype = type.split("/", 1)
-            if q > 0:
-            # if the q value is greater than 0 it was explicitly assigned in the Accept header and we can just place
-            # it into the sorted dictionary
-                self.insert(sorted, q, ContentType(supertype, subtype, params))
-            else:
-            # otherwise, we have to calculate the q value using the following equation which creates a q value "qv"
-            # within "q_range" of 1.0 [the first part of the eqn] based on the fraction of the way through the total
-            # accept header list scaled by the q_range [the second part of the eqn]
-                qv = (1.0 - q_range) + (((-1 * q)/counter) * q_range)
-                self.insert(sorted, qv, ContentType(supertype, subtype, params))
-
-            # now we have a dictionary keyed by q value which we can return
-        return sorted
-
-    def analyse_accept(self, accept):
+    def analyse_accept(self, accept, packaging=None):
         # FIXME: we need to somehow handle q=0.0 in here and in other related methods
         """
         Analyse the Accept header string from the HTTP headers and return a structured dictionary with each
@@ -999,13 +963,13 @@ class ContentNegotiator(object):
             if q > 0:
                 # if the q value is greater than 0 it was explicitly assigned in the Accept header and we can just place
                 # it into the sorted dictionary
-                self.insert(sorted, q, ContentType(supertype, subtype, params))
+                self.insert(sorted, q, ContentType(supertype, subtype, params, packaging))
             else:
                 # otherwise, we have to calculate the q value using the following equation which creates a q value "qv"
                 # within "q_range" of 1.0 [the first part of the eqn] based on the fraction of the way through the total
                 # accept header list scaled by the q_range [the second part of the eqn]
                 qv = (1.0 - q_range) + (((-1 * q)/counter) * q_range)
-                self.insert(sorted, qv, ContentType(supertype, subtype, params))
+                self.insert(sorted, qv, ContentType(supertype, subtype, params, packaging))
 
         # now we have a dictionary keyed by q value which we can return
         return sorted
@@ -1102,21 +1066,23 @@ class ContentNegotiator(object):
         reached
         """
         # get the accept header if available
-        accept, media_format = self.get_accept(dict)
-        print "Accept/Accept-Media-Format Header: " + str(accept)
+        accept = self.get_accept(dict)
+        packaging = self.get_packaging(dict)
+        print "Accept Header: " + str(accept)
+        print "Packaging: "+ str(packaging)
+
+        if packaging is None:
+            packaging = self.default_packaging
+
         if accept is None:
             # if it is not available just return the defaults
-            return ContentType(self.default_type, self.default_subtype, self.default_params, self.default_packaging)
+            return ContentType(self.default_type, self.default_subtype, self.default_params, packaging)
 
         # get us back a dictionary keyed by q value which tells us the order of preference that the client has
         # requested
-        analysed = None
-        if media_format:
-            analysed = self.analyse_media_format(accept)
-        else:
-            analysed = self.analyse_accept(accept)
+        analysed = self.analyse_accept(accept, packaging)
 
-        print "Analysed Accept/Accept-Media-Format: " + str(analysed)
+        print "Analysed Accept: " + str(analysed)
 
         # go through the analysed formats and cross reference them with the acceptable formats
         content_type = self.get_acceptable(analysed, self.acceptable)
@@ -1147,14 +1113,14 @@ class SWORDRequest(object):
     def __init__(self):
         """
         There are 4 HTTP sourced properties:
-        - on_behalf_of  - X-On-Behalf-Of in HTTP; the user being deposited on behalf of
-        - packaging     - X-Packaging in HTTP; the packaging format being used
-        - in_progress   - X-In-Progress in HTTP; whether the deposit is complete or not from a client perspective
-        - suppress_metadata - X-Suppress-Metadata; whether or not to extract metadata from the deposit
+        - on_behalf_of  - On-Behalf-Of in HTTP; the user being deposited on behalf of
+        - packaging     - Packaging in HTTP; the packaging format being used
+        - in_progress   - In-Progress in HTTP; whether the deposit is complete or not from a client perspective
+        - suppress_metadata - Suppress-Metadata; whether or not to extract metadata from the deposit
         """
 
         self.on_behalf_of = None
-        self.packaging = "http://purl.org/net/sword/package/default"
+        self.packaging = "http://purl.org/net/sword/package/default" # if this isn't populated externally, use the default
         self.in_progress = False
         self.suppress_metadata = False
         self.auth = None
@@ -1164,17 +1130,17 @@ class SWORDRequest(object):
     def set_by_header(self, key, value):
         """
         Convenience method to take a relevant HTTP header and its value and add it to this object.
-        e.g. set_by_header("X-On-Behalf-Of", "richard")  Notice that the format of the headers used
+        e.g. set_by_header("On-Behalf-Of", "richard")  Notice that the format of the headers used
         here is the web.py format which is all upper case, preceeding with HTTP_ with all - converted to _
         (for some unknown reason)
         """
-        if key == "HTTP_X_ON_BEHALF_OF":
+        if key == "HTTP_ON_BEHALF_OF":
             self.on_behalf_of = value
-        elif key == "HTTP_X_PACKAGING":
+        elif key == "HTTP_PACKAGING":
             self.packaging = value
-        elif key == "HTTP_X_IN_PROGRESS":
+        elif key == "HTTP_IN_PROGRESS":
             self.in_progress = (value.strip() == "true")
-        elif key == "HTTP_X_SUPPRESS_METADATA":
+        elif key == "HTTP_SUPPRESS_METADATA":
             self.suppress_metadata = (value.strip() == "true")
         elif key == "HTTP_CONTENT_MD5":
             self.content_md5 = value
@@ -1275,7 +1241,7 @@ class SWORDSpec(object):
         # The HTTP headers that are part of the specification (from a web.py perspective - don't be fooled, these
         # aren't the real HTTP header names - see the spec)
         self.sword_headers = [
-            "HTTP_X_ON_BEHALF_OF", "HTTP_X_PACKAGING", "HTTP_X_IN_PROGRESS", "HTTP_X_SUPPRESS_METADATA",
+            "HTTP_ON_BEHALF_OF", "HTTP_PACKAGING", "HTTP_IN_PROGRESS", "HTTP_SUPPRESS_METADATA",
             "HTTP_CONTENT_MD5", "HTTP_SLUG"
         ]
 
@@ -1290,13 +1256,13 @@ class SWORDSpec(object):
         dict = web.ctx.environ
 
         # get each of the allowed SWORD headers that can be validated and see if they do
-        ip = dict.get("HTTP_X_IN_PROGRESS")
+        ip = dict.get("HTTP_IN_PROGRESS")
         if ip is not None and ip != "true" and ip != "false":
-            return "X-In-Progress must be 'true' or 'false'"
+            return "In-Progress must be 'true' or 'false'"
 
-        sm = dict.get("HTTP_X_SUPPRESS_METADATA")
+        sm = dict.get("HTTP_SUPPRESS_METADATA")
         if sm is not None and sm != "true" and sm != "false":
-            return "X-Suppress-Metadata must be 'true' or 'false'"
+            return "Suppress-Metadata must be 'true' or 'false'"
 
         # there must be both an "atom" and "payload" input or data in web.data()
         webin = web.input()
@@ -1319,13 +1285,13 @@ class SWORDSpec(object):
         dict = web.ctx.environ
 
         # get each of the allowed SWORD headers that can be validated and see if they do
-        ip = dict.get("HTTP_X_IN_PROGRESS")
+        ip = dict.get("HTTP_IN_PROGRESS")
         if ip is not None and ip != "true" and ip != "false":
-            return "X-In-Progress must be 'true' or 'false'"
+            return "In-Progress must be 'true' or 'false'"
 
-        sm = dict.get("HTTP_X_SUPPRESS_METADATA")
+        sm = dict.get("HTTP_SUPPRESS_METADATA")
         if sm is not None and sm != "true" and sm != "false":
-            return "X-Suppress-Metadata must be 'true' or 'false'"
+            return "Suppress-Metadata must be 'true' or 'false'"
         
         # validates
         return None
@@ -1339,13 +1305,16 @@ class SWORDSpec(object):
         """
         d = DepositRequest()
 
+        # FIXME: do we need to read web.data() in an parse it with the email.mime library to do this properly?
+        # print web.data()
+        
         # first we need to find out if this is a multipart or not
         webin = web.input()
         if len(webin) == 2:
             d.atom = webin['atom']
             # FIXME: we know that due to the way that the multipart works, this is a base64 encoded string, which
             # does not equal a ZIP file.  Have to come back to this and figure out what is best to do
-            d.content = webin['payload']
+            d.content = base64.decodestring(webin['payload'])
         else:
             # if this wasn't a multipart, then the data is in web.data().  This could be a binary deposit or
             # an atom entry deposit - reply on the passed argument to determine which
@@ -1461,6 +1430,9 @@ class SWORDServer(object):
             for acc in self.configuration.app_accept:
                 accepts = etree.SubElement(collection, self.ns.APP + "accept")
                 accepts.text = acc
+                mraccepts = etree.SubElement(collection, self.ns.APP + "accept")
+                mraccepts.text = acc
+                mraccepts.set("alternate", "multipart-related")
 
             # SWORD collection policy
             collectionPolicy = etree.SubElement(collection, self.ns.SWORD + "collectionPolicy")
@@ -1479,10 +1451,9 @@ class SWORDServer(object):
             treatment.text = "Treatment description"
 
             # SWORD packaging formats accepted
-            for format, q in self.configuration.sword_accept_package:
+            for format in self.configuration.sword_accept_package:
                 acceptPackaging = etree.SubElement(collection, self.ns.SWORD + "acceptPackaging")
                 acceptPackaging.text = format
-                acceptPackaging.set("q", q)
 
             # provide a sub service element if appropriate
             if use_sub:
@@ -1609,7 +1580,7 @@ class SWORDServer(object):
             return mr
 
         # call the appropriate packager, and get back the filepath for the response
-        packager = self.configuration.package_disseminators[content_type.mimetype()]()
+        packager = self.configuration.package_disseminators[content_type.media_format()]()
         mr.filepath = packager.package(collection, id)
 
         return mr
@@ -1633,7 +1604,7 @@ class SWORDServer(object):
         if not self.exists(oid):
             return None
 
-        # remove all the old files before adding the new.  We leave behind the atom file if X-Suppress-Metadata is
+        # remove all the old files before adding the new.  We leave behind the atom file if Suppress-Metadata is
         # supplied
         self.dao.remove_content(collection, id, deposit.suppress_metadata)
 
@@ -1703,7 +1674,7 @@ class SWORDServer(object):
             return None
 
         # remove all the old files before adding the new.
-        # notice that here we allow the metadata file to remain if requested in X-Suppress-Metadata.  This is a
+        # notice that here we allow the metadata file to remain if requested in Suppress-Metadata.  This is a
         # question with regard to how the standard should work.
         self.dao.remove_content(collection, id, delete.suppress_metadata)
 
@@ -1834,7 +1805,7 @@ class SWORDServer(object):
 
         # now that we have stored the atom, we can invoke a package ingester over the top to extract
         # all the metadata and any files we want.  Notice that we override suppress_metadata, as there's
-        # no valid uses of X-Suppress-Metadata during a metadata update!
+        # no valid uses of Suppress-Metadata during a metadata update!
         packager = self.configuration.package_ingesters[deposit.packaging]()
         packager.ingest(collection, id, None, False)
 
@@ -1963,7 +1934,7 @@ class SWORDServer(object):
         # can be content negotiated for.  Basically we allow for multiple sword:package elements
         # which will tell people what they can content negotiate for
         for disseminator in self.configuration.sword_disseminate_package:
-            sp = etree.SubElement(entry, self.ns.SWORD + "package")
+            sp = etree.SubElement(entry, self.ns.SWORD + "packaging")
             sp.text = disseminator
 
         # treatment
@@ -2127,7 +2098,7 @@ class Statement(object):
         Args:
         - uri:  The URI to the original deposit
         - deposit_time:     When the deposit was originally made
-        - packaging_format:     The package format of the deposit, as supplied in the X-Packaging header
+        - packaging_format:     The package format of the deposit, as supplied in the Packaging header
         """
         self.original_deposits.append((uri, deposit_time, packaging_format, by, obo))
 

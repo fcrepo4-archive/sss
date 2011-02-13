@@ -12,7 +12,7 @@ class CURL(object):
     def __init__(self, col_id=None, oid=None, user=None, password=None, obo_user=None,
                  base=None, binary=None, multipart=None, binary_content_type=None,
                  mime_boundary=None, package_format=None, checksum=None, sd_id=None,
-                 accept=None, entry_doc=None):
+                 accept=None, entry_doc=None, accept_media=None):
         # constant values
         self.cmd = "curl -i"
         self.post = "-X POST --http1.0"
@@ -20,16 +20,17 @@ class CURL(object):
         self.get = "-X GET"
         self.delete = "-X DELETE"
         self.http = "http://"
-        self.on_behalf_of = "X-On-Behalf-Of"
-        self.packaging = "X-Packaging"
-        self.suppress_metadata = "X-Suppress-Metadata"
-        self.in_progress = "X-In-Progress"
+        self.on_behalf_of = "On-Behalf-Of"
+        self.packaging = "Packaging"
+        self.suppress_metadata = "Suppress-Metadata"
+        self.in_progress = "In-Progress"
         self.data = "--data-binary"
         self.content_type = "Content-Type"
         self.content_disposition = "Content-Disposition"
         self.mime_version = "MIME-Version"
         self.content_md5 = "Content-MD5"
         self.accept_header = "Accept"
+        self.accept_media_header = "Accept-Media-Features"
         self.slug_header = "Slug"
         self.sd_uri = "sd-uri"
         self.col_uri = "col-uri"
@@ -55,6 +56,7 @@ class CURL(object):
         self.checksum = "2b25f82ba67284461d4a481d7a06dd28" if checksum is None else checksum
         self.sd_id = sd_id # can be None
         self.accept = accept # can be None
+        self.accept_media = accept_media # can be None
 
     def auth_url(self, type):
         auth_string = ""
@@ -132,10 +134,12 @@ class CURL(object):
         parts.append(self.auth_url(self.col_uri))
         return " ".join(parts)
 
-    def media_resource(self):
+    def media_resource(self, packaging=False):
         parts = [self.cmd, self.get]
         if self.accept is not None:
             parts.append(self.header(self.accept_header, self.accept))
+        if self.package_format is not None and packaging:
+            parts.append(self.header(self.packaging, self.package_format))
         parts.append(self.auth_url(self.cont_uri))
         return " ".join(parts)
 
@@ -185,12 +189,14 @@ class CURL(object):
         parts.append(self.auth_url(self.edit_uri))
         return " ".join(parts)
 
-    def deposit_additional(self, obo=False, in_progress=False, multipart=False, checksum=False, suppress_metadata=False):
+    def deposit_additional(self, obo=False, in_progress=False, multipart=False, checksum=False, suppress_metadata=False, atom_only=False):
         parts = [self.cmd, self.post]
-        parts.append(self.file_upload(multipart=multipart))
-        parts.append(self.get_content_disp(multipart=multipart))
-        parts.append(self.get_content_type(multipart=multipart))
-        parts.append(self.header(self.packaging, self.package_format))
+        parts.append(self.file_upload(multipart=multipart, atom_only=atom_only))
+        if not atom_only:
+            parts.append(self.get_content_disp(multipart=multipart))
+        parts.append(self.get_content_type(multipart=multipart, atom_only=atom_only))
+        if not atom_only:
+            parts.append(self.header(self.packaging, self.package_format))
         if obo:
             parts.append(self.header(self.on_behalf_of, self.obo_user))
         if in_progress:
@@ -209,138 +215,191 @@ class CURL(object):
         parts.append(self.auth_url(self.edit_uri))
         return " ".join(parts)
 
-sid = "subservice"
-cid = "584511c0-50bb-4fb0-ac16-390b174cadfb"
-oid = "5d5aa37f-e0ae-4403-aff9-f87fc07b110f"
+def curl_batch(sid, cid, oid):
 
-# AUTHENTICATION
-################
+    # AUTHENTICATION
+    ################
 
-print CURL().service_document()
+    print CURL().service_document()
 
-print CURL().service_document(obo=True)
+    print CURL().service_document(obo=True)
 
-print CURL(user="", password="").service_document()
+    print CURL(user="", password="").service_document()
 
-print CURL(password="drows").service_document()
+    print CURL(password="drows").service_document()
 
-print CURL(user="drows").service_document()
+    print CURL(user="drows").service_document()
 
-print CURL(obo_user="bob").service_document(obo=True)
+    print CURL(obo_user="bob").service_document(obo=True)
 
-# SERVICE DOCUMENTS
-###################
+    # SERVICE DOCUMENTS
+    ###################
 
-# Plain old service document
-print CURL().service_document()
+    # Plain old service document
+    print CURL().service_document()
 
-# sub service document with X-On-Behalf-Of header
-print CURL(sd_id=sid).service_document(obo=True)
+    # sub service document with On-Behalf-Of header
+    print CURL(sd_id=sid).service_document(obo=True)
 
-# DEPOSIT NEW CONTENT
-#####################
+    # DEPOSIT NEW CONTENT
+    #####################
 
-# Most simple binary package deposit
-print CURL(col_id=cid).new_deposit()
+    # Most simple binary package deposit
+    print CURL(col_id=cid).new_deposit()
 
-# Binary package deposit with X-In-Progress
-print CURL(col_id=cid).new_deposit(in_progress=True)
+    # Binary package deposit with In-Progress
+    print CURL(col_id=cid).new_deposit(in_progress=True)
 
-# Atom Multipart deposit (most simple version)
-print CURL(col_id=cid).new_deposit(multipart=True)
+    # Atom Multipart deposit (most simple version)
+    print CURL(col_id=cid).new_deposit(multipart=True)
 
-# Binary package deposit with custom packaging header
-print CURL(col_id=cid, package_format="http://purl.org/net/sword/package/METSDSpaceSIP").new_deposit()
+    # Binary package deposit with custom packaging header
+    print CURL(col_id=cid, package_format="http://purl.org/net/sword/package/METSDSpaceSIP").new_deposit()
 
-# Binary package deposit with checksum check
-print CURL(col_id=cid).new_deposit(checksum=True)
+    # Binary package deposit with checksum check
+    print CURL(col_id=cid).new_deposit(checksum=True)
 
-# with a pre-prepared id
-print CURL(col_id=cid, oid=str(uuid.uuid4())).new_deposit()
+    # with a pre-prepared id
+    print CURL(col_id=cid, oid=str(uuid.uuid4())).new_deposit()
 
-# LIST A COLLECTION
-###################
+    # LIST A COLLECTION
+    ###################
 
-print CURL(col_id=cid).list_collection()
+    print CURL(col_id=cid).list_collection()
 
-# GET THE MEDIA RESOURCE
-########################
+    # GET THE MEDIA RESOURCE
+    ########################
 
-print CURL(col_id=cid, oid=oid).media_resource()
+    print CURL(col_id=cid, oid=oid).media_resource()
 
-print CURL(col_id=cid, oid=oid, accept="application/zip;swordpackage=http://www.swordapp.org/package/default").media_resource()
+    accept = "application/zip"
+    package = "http://purl.org/net/sword/package/default"
+    print CURL(col_id=cid, oid=oid, accept=accept, package_format=package).media_resource(packaging=True)
 
-print CURL(col_id=cid, oid=oid, accept="application/zip").media_resource()
+    accept = "application/zip"
+    print CURL(col_id=cid, oid=oid, accept=accept).media_resource()
 
-print CURL(col_id=cid, oid=oid, accept="text/html").media_resource()
+    accept = "text/html"
+    print CURL(col_id=cid, oid=oid, accept=accept).media_resource()
 
-print CURL(col_id=cid, oid=oid, accept="application/vnd+msword").media_resource()
+    accept = "application/vnd+msword"
+    print CURL(col_id=cid, oid=oid, accept_media=accept).media_resource()
 
-# OVERWRITE THE EXISTING CONTENT
-################################
+    # OVERWRITE THE EXISTING CONTENT
+    ################################
 
-print CURL(col_id=cid, oid=oid).overwrite()
+    print CURL(col_id=cid, oid=oid).overwrite()
 
-print CURL(col_id=cid, oid=oid).overwrite(in_progress=True)
+    print CURL(col_id=cid, oid=oid).overwrite(in_progress=True)
 
-print CURL(col_id=cid, oid=oid).overwrite(suppress_metadata=True)
+    print CURL(col_id=cid, oid=oid).overwrite(suppress_metadata=True)
 
-print CURL(col_id=cid, oid=oid, package_format="http://purl.org/net/sword/package/METSDSpaceSIP").overwrite()
+    print CURL(col_id=cid, oid=oid, package_format="http://purl.org/net/sword/package/METSDSpaceSIP").overwrite()
 
-# DELETE THE CONTENT BUT NOT CONTAINER
-######################################
+    # DELETE THE CONTENT BUT NOT CONTAINER
+    ######################################
 
-print CURL(col_id=cid, oid=oid).delete_content()
+    print CURL(col_id=cid, oid=oid).delete_content()
 
-print CURL(col_id=cid, oid=oid).delete_content(in_progress=True)
+    print CURL(col_id=cid, oid=oid).delete_content(in_progress=True)
 
-print CURL(col_id=cid, oid=oid).delete_content(suppress_metadata=True)
+    print CURL(col_id=cid, oid=oid).delete_content(suppress_metadata=True)
 
-# GET A REPRESENTATION OF THE CONTAINER
-#######################################
+    # GET A REPRESENTATION OF THE CONTAINER
+    #######################################
 
-print CURL(col_id=cid, oid=oid).get_container()
+    print CURL(col_id=cid, oid=oid).get_container()
 
-print CURL(col_id=cid, oid=oid, accept="application/rdf+xml").get_container()
+    # UPDATE THE CONTENT
+    ####################
 
-print CURL(col_id=cid, oid=oid, accept="application/atom+xml;type=entry").get_container()
+    print CURL(col_id=cid, oid=oid).deposit_additional()
 
-# UPDATE THE CONTENT
-####################
+    print CURL(col_id=cid, oid=oid).deposit_additional(in_progress=True)
 
-print CURL(col_id=cid, oid=oid).deposit_additional()
+    print CURL(col_id=cid, oid=oid).deposit_additional(checksum=True)
 
-print CURL(col_id=cid, oid=oid).deposit_additional(in_progress=True)
+    print CURL(col_id=cid, oid=oid).deposit_additional(multipart=True)
 
-print CURL(col_id=cid, oid=oid).deposit_additional(checksum=True)
+    print CURL(col_id=cid, oid=oid).deposit_additional(multipart=True, suppress_metadata=True)
 
-print CURL(col_id=cid, oid=oid).deposit_additional(multipart=True)
+    print CURL(col_id=cid, oid=oid, package_format="http://purl.org/net/sword/package/METSDSpaceSIP").deposit_additional()
 
-print CURL(col_id=cid, oid=oid).deposit_additional(multipart=True, suppress_metadata=True)
+    # ADD MORE METADATA
+    ###################
 
-print CURL(col_id=cid, oid=oid, package_format="http://purl.org/net/sword/package/METSDSpaceSIP").deposit_additional()
+    print CURL(col_id=cid, oid=oid).deposit_additional(atom_only=True)
 
-# UPDATE THE METADATA
-#####################
+    # UPDATE THE METADATA
+    #####################
 
-print CURL(col_id=cid, oid=oid).update_metadata()
+    print CURL(col_id=cid, oid=oid).update_metadata()
 
-print CURL(col_id=cid, oid=oid).update_metadata(in_progress=True)
+    print CURL(col_id=cid, oid=oid).update_metadata(in_progress=True)
 
-# DELETE THE OBJECT
-###################
+    # DELETE THE OBJECT
+    ###################
 
-print CURL(col_id=cid, oid=oid).delete_container()
+    print CURL(col_id=cid, oid=oid).delete_container()
 
-# GENERATING ERRORS
-###################
+    # GENERATING ERRORS
+    ###################
 
-print CURL(col_id=cid, package_format="http://purl.org/net/sword/package/error").new_deposit()
+    print CURL(col_id=cid, package_format="http://purl.org/net/sword/package/error").new_deposit()
 
-print CURL(col_id=cid, checksum="1234567890").new_deposit(checksum=True)
+    print CURL(col_id=cid, checksum="1234567890").new_deposit(checksum=True)
 
-c = CURL(col_id=cid)
-c.true_value = "whatever"
-print c.new_deposit(in_progress=True)
+    c = CURL(col_id=cid)
+    c.true_value = "whatever"
+    print c.new_deposit(in_progress=True)
 
-print CURL(obo_user="bob").service_document(obo=True)
+    print CURL(obo_user="bob").service_document(obo=True)
+
+
+from email.mime.multipart import MIMEMultipart, MIMEBase
+import httplib, mimetypes
+from email import encoders
+
+def create_multipart_message(atom_file, binary_file, dat_file):
+
+    # first build the full MIME message using the email library
+    msg = MIMEMultipart("related")
+
+    entry = open(atom_file, "rb")
+    atom = MIMEBase("application", "atom+xml")
+    atom['Content-Disposition'] = 'attachment; name="atom"'
+    atom.set_payload(entry.read())
+    msg.attach(atom)
+
+    zip = open(binary_file, 'rb')
+    base = MIMEBase("application", "zip")
+    base['Content-Disposition'] = 'attachment; name="payload"; filename="example.zip"'
+    base.set_payload(zip.read())
+    encoders.encode_base64(base)
+    msg.attach(base)
+
+    # now, to make it work with HTTP pull out the main headers
+    headers = {}
+    header_mode = True
+    body = []
+    for line in msg.as_string().splitlines(True):
+        if line == "\n" and header_mode:
+            header_mode = False
+        if header_mode:
+            (key, value) = line.split(":", 1)
+            headers[key.strip()] = value.strip()
+        else:
+            body.append(line)
+    body = "".join(body)
+
+    # write the body to the dat file
+    o = open(dat_file, "wb")
+    o.write(body)
+
+    return headers
+
+if __name__ == "__main__":
+    sid = "subservice"
+    cid = "584511c0-50bb-4fb0-ac16-390b174cadfb"
+    oid = "dddb918e-aade-4861-bd09-f6362718d129"
+    curl_batch(sid, cid, oid)

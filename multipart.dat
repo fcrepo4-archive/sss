@@ -2,7 +2,7 @@
 --===============0670350989==
 Content-Type: application/atom+xml
 MIME-Version: 1.0
-Content-Disposition: x-atom; name="atom"
+Content-Disposition: attachment; name="atom"
 
 <?xml version="1.0"?>
 <entry xmlns="http://www.w3.org/2005/Atom"
@@ -76,7 +76,7 @@ Content-Disposition: x-atom; name="atom"
 --===============0670350989==
 Content-Type: application/zip
 MIME-Version: 1.0
-Content-Disposition: x-payload; name="payload"; filename="example.zip"
+Content-Disposition: attachment; name="payload"; filename="example.zip"
 Content-Transfer-Encoding: base64
 
 UEsDBBQAAAAIAESPTTc8cx/9sQYAAAEYAAAIABUAbWV0cy54bWxVVAkAAyD5EEch+RBHVXgEAPUB
