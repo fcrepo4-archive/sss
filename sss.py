@@ -1383,7 +1383,7 @@ class SWORDServer(object):
         # build the namespace maps that we will use during serialisation
         self.sdmap = {None : self.ns.APP_NS, "sword" : self.ns.SWORD_NS, "atom" : self.ns.ATOM_NS, "dcterms" : self.ns.DC_NS}
         self.cmap = {None: self.ns.ATOM_NS}
-        self.drmap = {None: self.ns.ATOM_NS, "sword" : self.ns.SWORD_NS}
+        self.drmap = {None: self.ns.ATOM_NS, "sword" : self.ns.SWORD_NS, "dcterms" : self.ns.DC_NS}
         self.smap = {"rdf" : self.ns.RDF_NS, "ore" : self.ns.ORE_NS, "sword" : self.ns.SWORD_NS}
         self.emap = {"sword" : self.ns.SWORD_NS, "atom" : self.ns.ATOM_NS}
 
@@ -1876,6 +1876,13 @@ class SWORDServer(object):
         # the Edit-URI
         edit_uri = self.um.edit_uri(collection, id)
 
+        # the splash page URI
+        splash_uri = self.um.html_url(collection, id)
+
+        # the two statement uris
+        atom_statement_uri = self.um.state_uri(collection, id, "atom")
+        ore_statement_uri = self.um.state_uri(collection, id, "ore")
+
         # ensure that there is a metadata object, and that it is populated with enough information to build the
         # deposit receipt
         if metadata is None:
@@ -1914,36 +1921,34 @@ class SWORDServer(object):
         summary.set("type", "text")
         summary.text = metadata['abstract']
 
-        # User Agent
-        # FIXME: why is the userAgent relevant?  Can we get rid of it?  I have done so for the purposes of example
-        #userAgent = etree.SubElement(entry, self.ns.SWORD + "userAgent")
-        #userAgent.text = "MyJavaClient/0.1 Restlet/2.0"
-
+        
         # Generator - identifier for this server software
         generator = etree.SubElement(entry, self.ns.ATOM + "generator")
         generator.set("uri", "http://www.swordapp.org/sss")
         generator.set("version", "1.0")
 
-        # Media Resource Content URI (Cont-URI)
-        # FIXME: there is some uncertainty here over what the type value should be.  See notes.
-        content = etree.SubElement(entry, self.ns.ATOM + "content")
-        content.set("type", "application/zip")
-        content.set("src", cont_uri)
+        # now embed all the metadata as foreign markup
+        for field in metadata.keys():
+            fdc = etree.SubElement(entry, self.ns.DC + field)
+            fdc.text = metadata[field]
 
-        # FIXME: this is a proposal for how to possibly deal with announcing which package formats
-        # can be content negotiated for.  Basically we allow for multiple sword:package elements
-        # which will tell people what they can content negotiate for
-        for disseminator in self.configuration.sword_disseminate_package:
-            sp = etree.SubElement(entry, self.ns.SWORD + "packaging")
-            sp.text = disseminator
+        # verbose description
+        vd = etree.SubElement(entry, self.ns.SWORD + "verboseDescription")
+        vd.text = "SSS has done this, that and the other to process the deposit"
 
         # treatment
         treatment = etree.SubElement(entry, self.ns.SWORD + "treatment")
         treatment.text = "Treatment description"
 
-        # verbose description
-        vd = etree.SubElement(entry, self.ns.SWORD + "verboseDescription")
-        vd.text = "SSS has done this, that and the other to process the deposit"
+        # link to splash page
+        alt = etree.SubElement(entry, self.ns.ATOM + "link")
+        alt.set("rel", "alternate")
+        alt.set("href", splash_uri)
+
+        # Media Resource Content URI (Cont-URI)
+        content = etree.SubElement(entry, self.ns.ATOM + "content")
+        content.set("type", "application/zip")
+        content.set("src", cont_uri)
 
         # Edit-URI
         editlink = etree.SubElement(entry, self.ns.ATOM + "link")
@@ -1955,16 +1960,25 @@ class SWORDServer(object):
         emlink.set("rel", "edit-media")
         emlink.set("href", em_uri)
 
-        # FIXME: we are toying here with two different possible ways of serialising the resource map
-        #
-        # now finally embed the statement as foreign markup and return
-        # xml = statement.get_rdf_xml()
-        # entry.append(xml)
-        #
-        # move all the child elements of the statement entry into this entry
-        subentry = statement.get_atom_xml()
-        for child in subentry.getchildren():
-            entry.append(child)
+        # supported packaging formats
+        for disseminator in self.configuration.sword_disseminate_package:
+            sp = etree.SubElement(entry, self.ns.SWORD + "packaging")
+            sp.text = disseminator
+
+        # now the two statement uris
+        state1 = etree.SubElement(entry, self.ns.ATOM + "link")
+        state1.set("rel", "http://purl.org/net/sword/terms/statement")
+        state1.set("type", "application/atom+xml;type=feed")
+        state1.set("href", atom_statement_uri)
+
+        state2 = etree.SubElement(entry, self.ns.ATOM + "link")
+        state2.set("rel", "http://purl.org/net/sword/terms/statement")
+        state2.set("type", "application/rdf+xml")
+        state2.set("href", ore_statement_uri)
+
+        # finally, embed the ORE version of the statemet
+        xml = statement.get_rdf_xml()
+        entry.append(xml)
 
         return etree.tostring(entry, pretty_print=True)
 
@@ -2280,6 +2294,13 @@ class URIManager(object):
     def cont_uri(self, collection, id):
         """ The Cont-URI """
         return self.configuration.base_url + "cont-uri/" + collection + "/" + id
+
+    def state_uri(self, collection, id, type):
+        root = self.configuration.base_url + "state-uri/" + collection + "/" + id
+        if type == "atom":
+            return root + ".atom"
+        elif type == "ore":
+            return root + ".rdf"
 
     def part_uri(self, collection, id, filename):
         """ The URL for accessing the parts of an object in the store """
