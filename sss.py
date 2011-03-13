@@ -8,11 +8,19 @@ import web, uuid, os, re, base64, hashlib, urllib
 from lxml import etree
 from datetime import datetime
 from zipfile import ZipFile
+from web.wsgiserver import CherryPyWSGIServer
 
 # SERVER CONFIGURATION
 #############################################################################
 # Use this class to specify all the bits of configuration that will be used
 # in the sword server
+
+# Whether to run using SSL.  This uses a default self-signed certificate.  Change the paths to
+# use an alternative set of keys
+ssl = False
+if ssl:
+    CherryPyWSGIServer.ssl_certificate = "./ssl/cacert.pem"
+    CherryPyWSGIServer.ssl_private_key = "./ssl/privkey.pem"
 
 class Configuration(object):
     def __init__(self):
@@ -133,7 +141,10 @@ urls = (
     '/part-uri/(.+)', 'Part',
 
     # NOT PART OF SWORD: for convenience to supply HTML pages of deposited content
-    '/html/(.+)', 'WebUI'
+    '/html/(.+)', 'WebUI',
+    
+    # Home page, with an intro and some handy links
+    '/', 'index'
 )
 
 # HTTP HANDLERS
@@ -764,6 +775,25 @@ class Part(SwordHttpHandler):
     def GET(self, id):
         # FIXME: this is useful but not hugely important; get to it later
         pass
+
+class index():
+    """
+    Welcome / home page
+    """
+
+    def GET(self):
+        cfg = Configuration()
+    
+        return '<h1>Simple SWORDv2 Server</h1>' \
+               '<p>If prompted, use the username ' + cfg.user + ' and the password ' + cfg.password + '</p>' \
+               '<p>Handy links:</p>' \
+               '<ul>' \
+               '<li><a href="/sd-uri">Service Document (SD-URI)</a> /sd-uri' \
+               '<ul><li><a href="/sd-uri/foobar">Sub-service Document</a> /sd-uri/foobar</li></ul></li>' \
+               '<li><a href="/col-uri/0619ec04-a5d2-4680-9b21-789284dc09f0">Collection as listed in the service document (COL-URI)</a> /col-uri/foobar</li>' \
+               '<li><a href="/cont-uri/foobar">Media Resource Content - the URI used in atom:content@src (CONT-URI)</a> /cont-uri/foobar</li>' \
+               '</ul>'
+
 
 # CONTENT NEGOTIATION
 #######################################################################

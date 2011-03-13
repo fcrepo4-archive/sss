@@ -23,7 +23,9 @@ This will start the webserver at
     http://localhost:8080/
 
 Note that SSS automatically creates a data store in the directory in which the sss.py file is located so this should
-be done in a suitable directory
+be done in a suitable directory.  To start the server on an alternative port (e.g. 8443) start it with
+
+    python sss.py 8443
 
 Configuration
 =============
