@@ -46,6 +46,8 @@ class Configuration(object):
 
         # What media ranges should the app:accept element in the Service Document support
         self.app_accept = ["*/*"]
+        self.multipart_accept = ["*/*"]
+        self.accept_nothing = False
 
         # What packaging formats should the sword:acceptPackaging element in the Service Document support
         # The tuple is the URI of the format and your desired "q" value
@@ -87,6 +89,17 @@ class Configuration(object):
 
         # we can turn off deposit receipts, which is allowed by the specification
         self.return_deposit_receipt = True
+
+class CherryPyConfiguration(Configuration):
+    def __init__(self):
+        Configuration.__init__(self)
+
+class ApacheConfiguration(Configuration):
+    def __init__(self):
+        Configuration.__init__(self)
+        self.base_url = 'http://localhost/sss/'
+        self.store_dir = '/home/richard/tmp/store'
+        self.authenticate = False
 
 class Namespaces(object):
     """
@@ -133,6 +146,7 @@ urls = (
     '/cont-uri/(.+)', 'MediaResourceContent',   # The URI used in atom:content@src
     '/em-uri/(.+)', 'MediaResource',            # The URI used in atom:link@rel=edit-media
     '/edit-uri/(.+)', 'Container',              # The URI used in atom:link@rel=edit
+    '/state-uri/(.+)', 'StatementHandler'       # The URI used in atom:link@rel=sword:statement
 
     '/agg-uri/(.+)', 'Aggregation',              # The URI used to represent the ORE aggregation
 
@@ -156,14 +170,16 @@ class SwordHttpHandler(object):
         auth = web.ctx.env.get('HTTP_AUTHORIZATION')
         obo = web.ctx.env.get("HTTP_ON_BEHALF_OF")
 
-        cfg = Configuration()
+        cfg = global_configuration
 
         # we may have turned authentication off for development purposes
         if not cfg.authenticate:
+            print "Authentication is turned OFF"
             return Auth(cfg.user)
 
-        # if we want to authenticate, but there is no auth string then bouce with a 401
+        # if we want to authenticate, but there is no auth string then bounce with a 401 (realm SSS)
         if auth is None:
+            print "No authentication credentials supplied, requesting authentication"
             web.header('WWW-Authenticate','Basic realm="SSS"')
             web.ctx.status = '401 Unauthorized'
             return Auth()
@@ -172,13 +188,17 @@ class SwordHttpHandler(object):
             auth = re.sub('^Basic ','',auth)
             username, password = base64.decodestring(auth).split(':')
 
+            print "Authentication details: " + str(username) + ":" + str(password) + "/" + str(obo)
+
             # if the username and password don't match, bounce the user with a 401
             # meanwhile if the obo header has been passed but doesn't match the config value also bounce
             # witha 401 (I know this is an odd looking if/else but it's for clarity of what's going on
             if username != cfg.user or password != cfg.password:
+                print "Authentication Failed"
                 web.ctx.status = '401 Unauthorized'
                 return Auth()
             elif obo is not None and obo != cfg.obo:
+                print "Authentication Failed with Target Owner Unknown"
                 # we throw a sword error for TargetOwnerUnknown
                 return Auth(cfg.user, obo, target_owner_unknown=True)
 
@@ -278,7 +298,7 @@ class Collection(SwordHttpHandler):
         if result is None:
             return web.notfound()
 
-        cfg = Configuration()
+        cfg = global_configuration
 
         # created, accepted, or error
         if result.created:
@@ -375,7 +395,7 @@ class MediaResource(MediaResourceContent):
         Returns a Deposit Receipt
         """
         # find out if update is allowed
-        cfg = Configuration()
+        cfg = global_configuration
         if not cfg.allow_update:
             spec = SWORDSpec()
             ss = SWORDServer()
@@ -448,7 +468,7 @@ class MediaResource(MediaResourceContent):
         Return a Deposit Receipt
         """
         # find out if delete is allowed
-        cfg = Configuration()
+        cfg = global_configuration
         if not cfg.allow_delete:
             spec = SWORDSpec()
             ss = SWORDServer()
@@ -550,6 +570,7 @@ class Container(SwordHttpHandler):
         # the parameters section respectively
         cn.acceptable = [
                 ContentType("application", "atom+xml", "type=entry"),
+                ContentType("application", "atom+xml", "type=feed"),
                 ContentType("application", "rdf+xml")
             ]
 
@@ -573,7 +594,7 @@ class Container(SwordHttpHandler):
         Returns a Deposit Receipt
         """
         # find out if update is allowed
-        cfg = Configuration()
+        cfg = global_configuration
         if not cfg.allow_update:
             spec = SWORDSpec()
             ss = SWORDServer()
@@ -699,7 +720,7 @@ class Container(SwordHttpHandler):
         Returns nothing, as there is nothing to return (204 No Content)
         """
         # find out if update is allowed
-        cfg = Configuration()
+        cfg = global_configuration
         if not cfg.allow_delete:
             spec = SWORDSpec()
             ss = SWORDServer()
@@ -750,6 +771,10 @@ class Container(SwordHttpHandler):
             web.ctx.status = "204 No Content"
             return
 
+class StatementHandler(SwordHttpHandler):
+    def GET(self, id):
+        pass
+
 class Aggregation(SwordHttpHandler):
     def GET(self, id):
         # in this case we just redirect back to the Edit-URI with a 303 See Other
@@ -782,7 +807,7 @@ class index():
     """
 
     def GET(self):
-        cfg = Configuration()
+        cfg = global_configuration
     
         return '<h1>Simple SWORDv2 Server</h1>' \
                '<p>If prompted, use the username ' + cfg.user + ' and the password ' + cfg.password + '</p>' \
@@ -1335,6 +1360,22 @@ class SWORDSpec(object):
         """
         d = DepositRequest()
 
+        # now go through the headers and populate the Deposit object
+        dict = web.ctx.environ
+
+        # get the headers that have been provided.  Any headers which have not been provided have default values
+        # supplied in the DepositRequest object's constructor
+        print dict
+        for head in dict.keys():
+            if head in self.sword_headers:
+                d.set_by_header(head, dict[head])
+            if head == "HTTP_CONTENT_DISPOSITION":
+                d.filename = self.extract_filename(dict[head])
+            if head == "CONTENT_TYPE":
+                ct = dict[head]
+                if ct.startswith("application/atom+xml"):
+                    atom_only = True
+
         # FIXME: do we need to read web.data() in an parse it with the email.mime library to do this properly?
         # print web.data()
         
@@ -1352,17 +1393,6 @@ class SWORDSpec(object):
                 d.atom = web.data()
             else:
                 d.content = web.data()
-
-        # now go through the headers and populate the Deposit object
-        dict = web.ctx.environ
-
-        # get the headers that have been provided.  Any headers which have not been provided have default values
-        # supplied in the DepositRequest object's constructor
-        for head in dict.keys():
-            if head in self.sword_headers:
-                d.set_by_header(head, dict[head])
-            if head == "HTTP_CONTENT_DISPOSITION":
-                d.filename = self.extract_filename(dict[head])
 
         # now just attach the authentication data and return
         d.auth = auth
@@ -1399,7 +1429,7 @@ class SWORDServer(object):
     def __init__(self):
 
         # get the configuration
-        self.configuration = Configuration()
+        self.configuration = global_configuration
 
         # create a DAO for us to use
         self.dao = DAO()
@@ -1456,13 +1486,18 @@ class SWORDServer(object):
             ctitle = etree.SubElement(collection, self.ns.ATOM + "title")
             ctitle.text = "Collection " + col
 
-            # accepts declaration
-            for acc in self.configuration.app_accept:
+            if not self.configuration.accept_nothing:
+                # accepts declaration
+                for acc in self.configuration.app_accept:
+                    accepts = etree.SubElement(collection, self.ns.APP + "accept")
+                    accepts.text = acc
+
+                for acc in self.configuration.multipart_accept:
+                    mraccepts = etree.SubElement(collection, self.ns.APP + "accept")
+                    mraccepts.text = acc
+                    mraccepts.set("alternate", "multipart-related")
+            else:
                 accepts = etree.SubElement(collection, self.ns.APP + "accept")
-                accepts.text = acc
-                mraccepts = etree.SubElement(collection, self.ns.APP + "accept")
-                mraccepts.text = acc
-                mraccepts.set("alternate", "multipart-related")
 
             # SWORD collection policy
             collectionPolicy = etree.SubElement(collection, self.ns.SWORD + "collectionPolicy")
@@ -1540,16 +1575,18 @@ class SWORDServer(object):
         if deposit.atom is not None:
             self.dao.store_atom(collection, id, deposit.atom)
 
-        # store the content file
-        fn = self.dao.store_content(collection, id, deposit.content, deposit.filename)
+        # store the content file if one exists, and do some processing on it
+        deposit_uri = None
+        if deposit.content is not None:
+            fn = self.dao.store_content(collection, id, deposit.content, deposit.filename)
 
-        # now that we have stored the atom and the content, we can invoke a package ingester over the top to extract
-        # all the metadata and any files we want
-        packager = self.configuration.package_ingesters[deposit.packaging]()
-        packager.ingest(collection, id, fn, deposit.suppress_metadata)
+            # now that we have stored the atom and the content, we can invoke a package ingester over the top to extract
+            # all the metadata and any files we want
+            packager = self.configuration.package_ingesters[deposit.packaging]()
+            packager.ingest(collection, id, fn, deposit.suppress_metadata)
 
-        # An identifier which will resolve to the package just deposited
-        deposit_uri = self.um.part_uri(collection, id, fn)
+            # An identifier which will resolve to the package just deposited
+            deposit_uri = self.um.part_uri(collection, id, fn)
 
         # the aggregation uri
         agg_uri = self.um.agg_uri(collection, id)
@@ -1563,7 +1600,8 @@ class SWORDServer(object):
         s.rem_uri = edit_uri
         by = deposit.auth.by if deposit.auth is not None else None
         obo = deposit.auth.obo if deposit.auth is not None else None
-        s.original_deposit(deposit_uri, datetime.now(), deposit.packaging, by, obo)
+        if deposit_uri is not None:
+            s.original_deposit(deposit_uri, datetime.now(), deposit.packaging, by, obo)
         s.in_progress = deposit.in_progress
 
         # store the statement by itself
@@ -1753,6 +1791,8 @@ class SWORDServer(object):
             return self.dao.get_deposit_receipt_content(collection, id)
         elif content_type.mimetype() == "application/rdf+xml":
             return self.dao.get_statement_content(collection, id)
+        elif content_type.mimetype() == "application/atom+xml;type=feed":
+            return self.dao.get_statement_feed(collection, id)
 
     def deposit_existing(self, oid, deposit):
         """
@@ -2077,10 +2117,10 @@ class SWORDServer(object):
             return dr
 
         # have we been given an incompatible MD5?
-        m = hashlib.md5()
-        m.update(deposit.content)
-        digest = m.hexdigest()
         if deposit.content_md5 is not None:
+            m = hashlib.md5()
+            m.update(deposit.content)
+            digest = m.hexdigest()
             if digest != deposit.content_md5:
                 spec = SWORDSpec()
                 dr = DepositResponse()
@@ -2132,6 +2172,7 @@ class Statement(object):
         self.ns = Namespaces()
         self.smap = {"rdf" : self.ns.RDF_NS, "ore" : self.ns.ORE_NS, "sword" : self.ns.SWORD_NS}
         self.asmap = {"oreatom" : self.ns.ORE_ATOM_NS, "atom" : self.ns.ATOM_NS, "rdf" : self.ns.RDF_NS, "ore" : self.ns.ORE_NS, "sword" : self.ns.SWORD_NS}
+        self.fmap = {"atom" : self.ns.ATOM_NS, "sword" : self.ns.SWORD_NS}
 
     def __str__(self):
         return str(self.aggregation_uri) + ", " + str(self.rem_uri) + ", " + str(self.original_deposits)
@@ -2186,44 +2227,51 @@ class Statement(object):
         rdf = self.get_rdf_xml()
         return etree.tostring(rdf, pretty_print=True)
 
-    def get_atom_xml(self):
-        entry = etree.Element(self.ns.ATOM + "entry", nsmap=self.asmap)
+    def serialise_atom(self):
+        """
+        Serialise this statement to an Atom Feed document
+        """
+        # create the root atom feed element
+        feed = etree.Element(self.ns.ATOM + "feed", nsmap=self.fmap)
 
-        # link to splash page
-        alt = etree.SubElement(entry, self.ns.ATOM + "link")
-        alt.set("rel", "alternate")
-        alt.set("href", "http://FIXME/ALT/URL/HERE")
+        # create the sword:state term in the root of the feed
+        state_uri = self.in_progress_uri if self.in_progress else self.archived_uri
+        state = etree.SubElement(feed, self.ns.SWORD + "state")
+        state.set("href", state_uri)
+        meaning = etree.SubElement(state, self.ns.SWORD + "stateDescription")
+        meaning.text = self.states[state_uri]
 
-        # self reference
-        rel_self = etree.SubElement(entry, self.ns.ATOM + "link")
-        rel_self.set("rel", "self")
-        rel_self.set("href", self.rem_uri)
+        # now do an entry for each original deposit
+        for (uri, datestamp, format_uri, by, obo) in self.original_deposits:
+            # FIXME: this is not an official atom entry yet
+            entry = etree.SubElement(feed, self.ns.ATOM + "entry")
 
-        # describes
-        rel_desc = etree.SubElement(entry, self.ns.ATOM + "link")
-        rel_desc.set("rel", self.ns.ORE_NS + "describes")
-        rel_desc.set("href", self.aggregation_uri)
+            category = etree.SubElement(entry, self.ns.ATOM + "category")
+            category.set("scheme", self.ns.SWORD_NS)
+            category.set("term", self.ns.SWORD_NS + "originalDeposit")
+            category.set("label", "Orignal Deposit")
 
-        # Aggregation ATOM category
-        cat = etree.SubElement(entry, self.ns.ATOM + "category")
-        cat.set("term", self.ns.ORE_NS + "Aggregation")
-        cat.set("label", "Aggregation")
-        cat.set("scheme", self.ns.ORE_NS)
+            # Media Resource Content URI (Cont-URI)
+            content = etree.SubElement(entry, self.ns.ATOM + "content")
+            content.set("type", "application/zip")
+            content.set("src", uri)
 
-         # Create aggregations
-        for (uri, datestamp, format, by, obo) in self.original_deposits:
-            aggregates = etree.SubElement(entry, self.ns.ATOM + "link")
-            aggregates.set("rel", self.ns.ORE_NS + "aggregates")
-            aggregates.set("href", uri)
+            # add all the foreign markup
 
-        # now embed the complete resource map into the atom xml document in the
-        # oreatom:triples element
-        triples = etree.SubElement(entry, self.ns.ORE_ATOM + "triples")
-        rdf = self.get_rdf_xml()
-        for child in rdf.getchildren():
-            triples.append(child)
+            format = etree.SubElement(entry, self.ns.SWORD + "packaging")
+            format.text = format_uri
 
-        return entry
+            deposited = etree.SubElement(entry, self.ns.SWORD + "depositedOn")
+            deposited.text = datestamp.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            deposit_by = etree.SubElement(entry, self.ns.SWORD + "depositedBy")
+            deposit_by.text = by
+
+            if obo is not None:
+                deposit_obo = etree.SubElement(entry, self.ns.SWORD + "depositedOnBehalfOf")
+                deposit_obo.text = obo
+
+        return etree.tostring(feed, pretty_print=True)
 
     def get_rdf_xml(self):
         """
@@ -2297,7 +2345,7 @@ class URIManager(object):
     Class for providing a single point of access to all identifiers used by SSS
     """
     def __init__(self):
-        self.configuration = Configuration()
+        self.configuration = global_configuration
 
     def html_url(self, collection, id):
         """ The url for the HTML splash page of an object in the store """
@@ -2363,7 +2411,7 @@ class DAO(object):
         this method will check to see that it has enough fake collections and make up the defecit, but it WILL NOT
         remove excess collections
         """
-        self.configuration = Configuration()
+        self.configuration = global_configuration
 
         # first thing to do is create the store if it does not already exist
         if not os.path.exists(self.configuration.store_dir):
@@ -2460,8 +2508,12 @@ class DAO(object):
 
     def store_statement(self, collection, id, statement):
         """ Store the supplied statement document content in the object idenfied by the id in the specified collection """
+        # store the RDF version
         sfile = os.path.join(self.configuration.store_dir, collection, id, "sss_statement.xml")
         self.save(sfile, statement.serialise())
+        # store the Atom Feed version
+        sfile = os.path.join(self.configuration.store_dir, collection, id, "sss_statement.atom.xml")
+        self.save(sfile, statement.serialise_atom())
 
     def store_deposit_receipt(self, collection, id, receipt):
         """ Store the supplied receipt document content in the object idenfied by the id in the specified collection """
@@ -2536,6 +2588,12 @@ class DAO(object):
         """ Read the statement for the specified container """
         f = open(self.get_store_path(collection, id, "sss_statement.xml"), "r")
         return f.read()
+
+    def get_statement_feed(self, collection, id):
+        """ Read the statement for the specified container """
+        f = open(self.get_store_path(collection, id, "sss_statement.atom.xml"), "r")
+        return f.read()
+
 
     def get_atom_content(self, collection, id):
         """ Read the statement for the specified container """
@@ -2669,6 +2727,12 @@ class METSDSpaceIngester(IngestPackager):
 #######################################################################
 # This is the bit which actually invokes the web.py server when this module is run
 
-app = web.application(urls, globals())
+global_configuration = ApacheConfiguration()
+
+# if we run the file as a mod_wsgi module, do this
+application = web.application(urls, globals()).wsgifunc()
+
+# if we run the file directly, use the bundled CherryPy server ...
 if __name__ == "__main__":
+    app = web.application(urls, globals())
     app.run()

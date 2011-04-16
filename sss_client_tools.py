@@ -400,6 +400,6 @@ def create_multipart_message(atom_file, binary_file, dat_file):
 
 if __name__ == "__main__":
     sid = "subservice"
-    cid = "584511c0-50bb-4fb0-ac16-390b174cadfb"
+    cid = "43baf931-d6a0-4da3-8f17-ae6e5efc812b"
     oid = "dddb918e-aade-4861-bd09-f6362718d129"
     curl_batch(sid, cid, oid)
