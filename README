@@ -11,6 +11,11 @@ The Simple SWORD Server is a reference implementation of the draft SWORD 2.0 spe
 to requests as if it were a real SWORD 2.0 server, although under the hood it is a simple file store which carries out
 minimal processing on the content it works with.
 
+Prerequisites
+=============
+
+SSS depends on web.py and lxml, so you will need to easy_install both of these before proceeding.  You will need to have installed libxml2 and libxslt1.1 for lxml to install.
+
 Quick Start
 ===========
 
@@ -30,8 +35,37 @@ be done in a suitable directory.  To start the server on an alternative port (e.
 Configuration
 =============
 
-SSS has a Configuration() object which can be modified to change some aspects of its behaviour.  Open sss.py for
+SSS has a configuration object which can be modified to change some aspects of its behaviour.  Open sss.py for
 editing and find the Configuration object; each of the options available to you is documented inline.
+
+If you are running this using the Quick Start above, you can leave the configuration as-is and everything should work.  If you are deploying SSS under Apache, you will need to change the configuration object from CherryPyConfiguration to ApacheConfiguration which can be done at the end of the file.
+
+
+Deployment Under Apache
+=======================
+
+In order to get HTTP 1.1 support, it is necessary to deploy SSS under Apache (CherryPy does not support HTTP 1.1 at this point)
+
+To do this, you can follow the instructions at:
+
+    http://webpy.org/cookbook/mod_wsgi-apache
+
+When setting up your httpd.conf file, to allow file uploads to use Transfer-Encoding: chunked, you will need to set up the configuration as follows:
+
+LoadModule wsgi_module /usr/lib/apache2/modules/mod_wsgi.so
+WSGIScriptAlias /sss /path/to/SSS/sss.py
+
+Alias /sss/static /path/to/SSS/static/
+AddType text/html .py
+
+<Directory /path/to/SSS/>
+    WSGIChunkedRequest On 
+    Order deny,allow
+    Allow from all
+</Directory>
+
+Note this sets an explicit location for the wsgi_module (required for Ubuntu, YMMV on other platforms), and adds the WSGIChunkedRequest to the correct context.
+
 
 Requests to the server with CURL
 ================================

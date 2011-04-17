@@ -98,7 +98,7 @@ class ApacheConfiguration(Configuration):
     def __init__(self):
         Configuration.__init__(self)
         self.base_url = 'http://localhost/sss/'
-        self.store_dir = '/tmp/store'
+        self.store_dir = '/home/richard/tmp/store'
         self.authenticate = False
 
 class Namespaces(object):
@@ -2727,7 +2727,7 @@ class METSDSpaceIngester(IngestPackager):
 #######################################################################
 # This is the bit which actually invokes the web.py server when this module is run
 
-global_configuration = CherryPyConfiguration()
+global_configuration = ApacheConfiguration()
 
 # if we run the file as a mod_wsgi module, do this
 application = web.application(urls, globals()).wsgifunc()
