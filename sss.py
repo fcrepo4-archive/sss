@@ -956,7 +956,7 @@ class ContentNegotiator(object):
         # its analysis, but without respect to its position in the preferences list.  highest_q and counter will be
         # recorded during this first run so that we can use them to sort the list later
         unsorted = []
-        highest_q = 0
+        highest_q = 0.0
         counter = 0
 
         # go through each possible content type and analyse it along with its q value
@@ -984,8 +984,8 @@ class ContentNegotiator(object):
                     # "type;q"
                     q = components[1].strip()[2:] # strip the "q=" from the start of the q value
                     # if the q value is the highest one we've seen so far, record it
-                    if int(q) > highest_q:
-                        highest_q = q
+                    if float(q) > highest_q:
+                        highest_q = float(q)
                 else:
                     # "type;params"
                     params = components[1].strip()
@@ -994,8 +994,8 @@ class ContentNegotiator(object):
                 params = components[1].strip()
                 q = components[1].strip()[2:] # strip the "q=" from the start of the q value
                 # if the q value is the highest one we've seen so far, record it
-                if int(q) > highest_q:
-                    highest_q = q
+                if float(q) > highest_q:
+                    highest_q = float(q)
 
             # at the end of the analysis we have all of the components with or without their default values, so we
             # just record the analysed version for the time being as a tuple in the unsorted array
@@ -1323,14 +1323,14 @@ class SWORDSpec(object):
         webin = web.input()
         if len(webin) != 2 and len(webin) > 0:
             return "Multipart request has more than 2 parts"
-        if len(webin) == 2 and not webin.has_key("atom") and not webin.has_key("payload"):
+        if len(webin) >= 2 and not webin.has_key("atom") and not webin.has_key("payload"):
             return "Multipart request must contain Content-Dispositions with names 'atom' and 'payload'"
         if len(webin) > 0 and not allow_multipart:
             return "Multipart request not permitted in this context"
 
         # if we get to here then we have a valid multipart or no multipart
-        if len(webin) != 2:
-            if web.data() is None:
+        if len(webin) != 2: # if it is not multipart
+            if web.data() is None: # and there is no content
                 return "No content sent to the server"
 
         # validates

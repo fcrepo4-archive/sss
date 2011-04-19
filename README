@@ -19,7 +19,10 @@ SSS depends on web.py and lxml, so you will need to easy_install both of these b
 Quick Start
 ===========
 
-To start SSS, place sss.py in suitable directory of its own and start it with
+NOTE: using CherryPy out of the box does not support HTTP 1.1 (due to a bug), so you will need to issue requests with HTTP 1.0.  This is a nuisance, so for uses other than using CURL it is recommended to run SSS behind Apache, as described further down...
+
+
+To start SSS using CherryPy, place sss.py in suitable directory of its own and start it with
 
     python sss.py
 
@@ -44,7 +47,7 @@ If you are running this using the Quick Start above, you can leave the configura
 Deployment Under Apache
 =======================
 
-In order to get HTTP 1.1 support, it is necessary to deploy SSS under Apache (CherryPy does not support HTTP 1.1 at this point)
+In order to get HTTP 1.1 support, it is necessary to deploy SSS under Apache (CherryPy does not support HTTP 1.1 at this point due to a bug)
 
 To do this, you can follow the instructions at:
 
