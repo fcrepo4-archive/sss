@@ -99,7 +99,7 @@ class ApacheConfiguration(Configuration):
         Configuration.__init__(self)
         self.base_url = 'http://localhost/sss/'
         self.store_dir = '/home/richard/tmp/store'
-        self.authenticate = False
+        self.authenticate = True
 
 class Namespaces(object):
     """
@@ -140,6 +140,7 @@ class Namespaces(object):
 # which reflect the short-hand terms used in the SWORD documentation (sd-uri, col-uri, cont-uri, em-uri and edit-uri
 #
 urls = (
+    '/', 'Index',                               # Home page, with an intro and some handy links
     '/sd-uri', 'ServiceDocument',               # From which to retrieve the service document
     '/sd-uri/(.+)', 'ServiceDocument',          # for sub-service documents
     '/col-uri/(.+)', 'Collection',              # Representing a Collection as listed in the service document
@@ -155,10 +156,7 @@ urls = (
     '/part-uri/(.+)', 'Part',
 
     # NOT PART OF SWORD: for convenience to supply HTML pages of deposited content
-    '/html/(.+)', 'WebUI',
-    
-    # Home page, with an intro and some handy links
-    '/', 'index'
+    '/html/(.+)', 'WebUI'
 )
 
 # HTTP HANDLERS
@@ -801,7 +799,7 @@ class Part(SwordHttpHandler):
         # FIXME: this is useful but not hugely important; get to it later
         pass
 
-class index():
+class Index():
     """
     Welcome / home page
     """
@@ -813,10 +811,10 @@ class index():
                '<p>If prompted, use the username ' + cfg.user + ' and the password ' + cfg.password + '</p>' \
                '<p>Handy links:</p>' \
                '<ul>' \
-               '<li><a href="/sd-uri">Service Document (SD-URI)</a> /sd-uri' \
-               '<ul><li><a href="/sd-uri/foobar">Sub-service Document</a> /sd-uri/foobar</li></ul></li>' \
-               '<li><a href="/col-uri/0619ec04-a5d2-4680-9b21-789284dc09f0">Collection as listed in the service document (COL-URI)</a> /col-uri/foobar</li>' \
-               '<li><a href="/cont-uri/foobar">Media Resource Content - the URI used in atom:content@src (CONT-URI)</a> /cont-uri/foobar</li>' \
+               '<li><a href="sd-uri">Service Document (SD-URI)</a> /sd-uri' \
+               '<ul><li><a href="sd-uri/foobar">Sub-service Document</a> /sd-uri/foobar</li></ul></li>' \
+               '<li><a href="col-uri/0619ec04-a5d2-4680-9b21-789284dc09f0">Collection as listed in the service document (COL-URI)</a> /col-uri/foobar</li>' \
+               '<li><a href="cont-uri/foobar">Media Resource Content - the URI used in atom:content@src (CONT-URI)</a> /cont-uri/foobar</li>' \
                '</ul>'
 
 

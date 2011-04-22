@@ -53,10 +53,11 @@ To do this, you can follow the instructions at:
 
     http://webpy.org/cookbook/mod_wsgi-apache
 
-When setting up your httpd.conf file, to allow file uploads to use Transfer-Encoding: chunked, you will need to set up the configuration as follows:
+When setting up your httpd.conf file, to allow file uploads to use Transfer-Encoding: chunked, and to ensure authorization credentials are forwarded, you will need to set up the configuration as follows:
 
 LoadModule wsgi_module /usr/lib/apache2/modules/mod_wsgi.so
 WSGIScriptAlias /sss /path/to/SSS/sss.py
+WSGIPassAuthorization On
 
 Alias /sss/static /path/to/SSS/static/
 AddType text/html .py
