@@ -362,7 +362,7 @@ class MediaResourceContent(SwordHttpHandler):
 
             # The list of acceptable formats (in order of preference).
             cn.acceptable = [
-                    ContentType("application", "zip", None, "http://purl.org/net/sword/package/default"),
+                    ContentType("application", "zip", None, "http://purl.org/net/sword/package/SimpleZip"),
                     ContentType("application", "zip"),
                     ContentType("application", "atom+xml", "type=feed"),
                     ContentType("text", "html")
@@ -1185,7 +1185,7 @@ class SWORDRequest(object):
         """
 
         self.on_behalf_of = None
-        self.packaging = "http://purl.org/net/sword/package/default" # if this isn't populated externally, use the default
+        self.packaging = "http://purl.org/net/sword/package/Binary" # if this isn't populated externally, use the default
         self.in_progress = False
         self.suppress_metadata = False
         self.auth = None
@@ -1823,34 +1823,35 @@ class SWORDServer(object):
         if not self.exists(oid):
             return None
 
+        # load the statement
+        s = self.dao.load_statement(collection, id)
+
         # now just store the atom file and the content (this may overwrite an existing atom document - this is
         # intentional)
         if deposit.atom is not None:
             self.dao.store_atom(collection, id, deposit.atom)
 
         # store the content file
-        fn = self.dao.store_content(collection, id, deposit.content, deposit.filename)
+        if deposit.content is not None:
+            fn = self.dao.store_content(collection, id, deposit.content, deposit.filename)
 
-        # now that we have stored the atom and the content, we can invoke a package ingester over the top to extract
-        # all the metadata and any files we want.  Notice that we pass in the suppress_metadata flag, so the packager
-        # won't overwrite the metadata if it isn't supposed to
-        packager = self.configuration.package_ingesters[deposit.packaging]()
-        packager.ingest(collection, id, fn, deposit.suppress_metadata)
+            # now that we have stored the atom and the content, we can invoke a package ingester over the top to extract
+            # all the metadata and any files we want.  Notice that we pass in the suppress_metadata flag, so the packager
+            # won't overwrite the metadata if it isn't supposed to
+            packager = self.configuration.package_ingesters[deposit.packaging]()
+            packager.ingest(collection, id, fn, deposit.suppress_metadata)
 
-        # An identifier which will resolve to the package just deposited
-        deposit_uri = self.um.part_uri(collection, id, fn)
+            # An identifier which will resolve to the package just deposited
+            deposit_uri = self.um.part_uri(collection, id, fn)
 
-        # load the statement
-        s = self.dao.load_statement(collection, id)
+            # add the new deposit
+            by = deposit.auth.by if deposit.auth is not None else None
+            obo = deposit.auth.obo if deposit.auth is not None else None
+            s.original_deposit(deposit_uri, datetime.now(), deposit.packaging, by, obo)
+            s.in_progress = deposit.in_progress
 
-        # add the new deposit
-        by = deposit.auth.by if deposit.auth is not None else None
-        obo = deposit.auth.obo if deposit.auth is not None else None
-        s.original_deposit(deposit_uri, datetime.now(), deposit.packaging, by, obo)
-        s.in_progress = deposit.in_progress
-
-        # store the statement by itself
-        self.dao.store_statement(collection, id, s)
+            # store the statement by itself
+            self.dao.store_statement(collection, id, s)
 
         # create the deposit receipt
         receipt = self.deposit_receipt(collection, id, deposit, s, None)
