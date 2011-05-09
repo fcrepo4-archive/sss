@@ -52,8 +52,8 @@ class Configuration(object):
         # What packaging formats should the sword:acceptPackaging element in the Service Document support
         # The tuple is the URI of the format and your desired "q" value
         self.sword_accept_package = [
-                "http://purl.org/net/sword/package/default",
-                "http://purl.org/net/sword/package/binary",
+                "http://purl.org/net/sword/package/SimpleZip",
+                "http://purl.org/net/sword/package/Binary",
                 "http://purl.org/net/sword/package/METSDSpaceSIP"
             ]
 
@@ -62,20 +62,20 @@ class Configuration(object):
 
         # list of package formats that SSS can provide when retrieving the Media Resource
         self.sword_disseminate_package = [
-            "http://purl.org/net/sword/package/default"
+            "http://purl.org/net/sword/package/SimpleZip"
         ]
 
         # Supported package format disseminators; for the content type (dictionary key), the associated
         # class will be used to package the content for dissemination
         self.package_disseminators = {
-                ContentType("application", "zip", None, "http://purl.org/net/sword/package/default").media_format() : DefaultDisseminator,
+                ContentType("application", "zip", None, "http://purl.org/net/sword/package/SimpleZip").media_format() : DefaultDisseminator,
                 ContentType("application", "zip").media_format() : DefaultDisseminator
             }
 
         # Supported package format ingesters; for the Packaging header (dictionary key), the associated class will
         # be used to unpackage deposited content
         self.package_ingesters = {
-                "http://purl.org/net/sword/package/default" : DefaultIngester,
+                "http://purl.org/net/sword/package/SimpleZip" : DefaultIngester,
                 "http://purl.org/net/sword/package/METSDSpaceSIP" : METSDSpaceIngester
             }
 
