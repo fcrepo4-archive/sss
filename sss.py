@@ -69,7 +69,8 @@ class Configuration(object):
         # class will be used to package the content for dissemination
         self.package_disseminators = {
                 ContentType("application", "zip", None, "http://purl.org/net/sword/package/SimpleZip").media_format() : DefaultDisseminator,
-                ContentType("application", "zip").media_format() : DefaultDisseminator
+                ContentType("application", "zip").media_format() : DefaultDisseminator,
+                ContentType("application", "atom+xml", "type=feed").media_format() : FeedDisseminator
             }
 
         # Supported package format ingesters; for the Packaging header (dictionary key), the associated class will
@@ -334,6 +335,12 @@ class MediaResourceContent(SwordHttpHandler):
         - id:   the ID of the object in the store
         Returns the content in the requested format
         """
+        # check to see if we're after the .atom version of the content
+        atom = False
+        if id.endswith(".atom"):
+            id = id[:-5]
+            atom = True
+        
         # NOTE: this method is not authenticated - we imagine sharing this URL with end-users who will just want
         # to retrieve the content.  It's only for the purposes of example, anyway
         ss = SWORDServer()
@@ -343,23 +350,28 @@ class MediaResourceContent(SwordHttpHandler):
         # which would be weird from a client perspective
         if not ss.exists(id):
             return web.notfound()
+        
+        content_type = None
+        if not atom:
+            # do some content negotiation
+            cn = ContentNegotiator()
 
-        # do some content negotiation
-        cn = ContentNegotiator()
+            # if no Accept header, then we will get this back
+            cn.default_type = "text"
+            cn.default_subtype = "html"
 
-        # if no Accept header, then we will get this back
-        cn.default_type = "text"
-        cn.default_subtype = "html"
+            # The list of acceptable formats (in order of preference).
+            cn.acceptable = [
+                    ContentType("application", "zip", None, "http://purl.org/net/sword/package/default"),
+                    ContentType("application", "zip"),
+                    ContentType("application", "atom+xml", "type=feed"),
+                    ContentType("text", "html")
+                ]
 
-        # The list of acceptable formats (in order of preference).
-        cn.acceptable = [
-                ContentType("application", "zip", None, "http://purl.org/net/sword/package/default"),
-                ContentType("application", "zip"),
-                ContentType("text", "html")
-            ]
-
-        # do the negotiation
-        content_type = cn.negotiate(web.ctx.environ)
+            # do the negotiation
+            content_type = cn.negotiate(web.ctx.environ)
+        else:
+            content_type = ContentType("application", "atom+xml", "type=feed")
 
         # did we successfully negotiate a content type?
         if content_type is None:
@@ -1644,7 +1656,7 @@ class SWORDServer(object):
             mr.redirect = True
             mr.url = self.um.html_url(collection, id)
             return mr
-
+        
         # call the appropriate packager, and get back the filepath for the response
         packager = self.configuration.package_disseminators[content_type.media_format()]()
         mr.filepath = packager.package(collection, id)
@@ -2022,11 +2034,16 @@ class SWORDServer(object):
         editlink = etree.SubElement(entry, self.ns.ATOM + "link")
         editlink.set("rel", "edit")
         editlink.set("href", edit_uri)
-
+        
         # EM-URI (Media Resource)
         emlink = etree.SubElement(entry, self.ns.ATOM + "link")
         emlink.set("rel", "edit-media")
         emlink.set("href", em_uri)
+        emfeedlink = etree.SubElement(entry, self.ns.ATOM + "link")
+        emfeedlink.set("rel", "edit-media")
+        emfeedlink.set("type", "application/atom+xml;type=feed")
+        emfeedlink.set("href", em_uri + ".atom")
+
 
         # supported packaging formats
         for disseminator in self.configuration.sword_disseminate_package:
@@ -2661,6 +2678,34 @@ class DefaultDisseminator(DisseminationPackager):
 
         # return the path to the package to the caller
         return zpath
+
+class FeedDisseminator(DisseminationPackager):
+    def __init__(self):
+        self.dao = DAO()
+        self.ns = Namespaces()
+        self.um = URIManager()
+        self.nsmap = {None: self.ns.ATOM_NS}
+
+    def package(self, collection, id):
+        """ create a feed representation of the package """
+        # get a list of the relevant content files
+        files = self.dao.list_content(collection, id, exclude=["mediaresource.feed.xml"])
+
+        # create a feed object with all the files as entries
+        feed = etree.Element(self.ns.ATOM + "feed", nsmap=self.nsmap)
+        
+        for file in files:
+            entry = etree.SubElement(feed, self.ns.ATOM + "entry")
+            link = etree.SubElement(entry, self.ns.ATOM + "link")
+            link.set("rel", "edit")
+            link.set("href", self.um.part_uri(collection, id, file))
+        
+        fpath = self.dao.get_store_path(collection, id, "mediaresource.feed.xml")
+        f = open(fpath, "wb")
+        f.write(etree.tostring(feed, pretty_print=True))
+        f.close()
+        
+        return fpath
 
 class IngestPackager(object):
     def ingest(self, collection, id, filename, suppress_metadata):
