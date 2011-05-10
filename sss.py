@@ -1840,8 +1840,10 @@ class SWORDServer(object):
             # now that we have stored the atom and the content, we can invoke a package ingester over the top to extract
             # all the metadata and any files we want.  Notice that we pass in the metadata_relevant flag, so the packager
             # won't overwrite the metadata if it isn't supposed to
-            packager = self.configuration.package_ingesters[deposit.packaging]()
-            packager.ingest(collection, id, fn, deposit.metadata_relevant)
+            pclass = self.configuration.package_ingesters.get(deposit.packaging)
+            if pclass is not None:
+                packager = pclass()
+                packager.ingest(collection, id, fn, deposit.metadata_relevant)
 
             # An identifier which will resolve to the package just deposited
             deposit_uri = self.um.part_uri(collection, id, fn)
