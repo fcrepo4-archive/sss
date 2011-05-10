@@ -669,6 +669,8 @@ class Container(SwordHttpHandler):
         """
         PUT a new Entry over the existing entry
         """
+        cfg = global_configuration
+        
         # authenticate
         auth = self.authenticate(web)
         if not auth.success():
@@ -1181,13 +1183,13 @@ class SWORDRequest(object):
         - on_behalf_of  - On-Behalf-Of in HTTP; the user being deposited on behalf of
         - packaging     - Packaging in HTTP; the packaging format being used
         - in_progress   - In-Progress in HTTP; whether the deposit is complete or not from a client perspective
-        - suppress_metadata - Suppress-Metadata; whether or not to extract metadata from the deposit
+        - metadata_relevant - Metadata-Relevant; whether or not the deposit contains relevant metadata
         """
 
         self.on_behalf_of = None
         self.packaging = "http://purl.org/net/sword/package/Binary" # if this isn't populated externally, use the default
         self.in_progress = False
-        self.suppress_metadata = False
+        self.metadata_relevant = True # the server MAY assume that it is True
         self.auth = None
         self.content_md5 = None
         self.slug = None
@@ -1205,8 +1207,8 @@ class SWORDRequest(object):
             self.packaging = value
         elif key == "HTTP_IN_PROGRESS":
             self.in_progress = (value.strip() == "true")
-        elif key == "HTTP_SUPPRESS_METADATA":
-            self.suppress_metadata = (value.strip() == "true")
+        elif key == "HTTP_METADATA_RELEVANT":
+            self.metadata_relevant = (value.strip() == "true")
         elif key == "HTTP_CONTENT_MD5":
             self.content_md5 = value
         elif key == "HTTP_SLUG":
@@ -1306,7 +1308,7 @@ class SWORDSpec(object):
         # The HTTP headers that are part of the specification (from a web.py perspective - don't be fooled, these
         # aren't the real HTTP header names - see the spec)
         self.sword_headers = [
-            "HTTP_ON_BEHALF_OF", "HTTP_PACKAGING", "HTTP_IN_PROGRESS", "HTTP_SUPPRESS_METADATA",
+            "HTTP_ON_BEHALF_OF", "HTTP_PACKAGING", "HTTP_IN_PROGRESS", "HTTP_METADATA_RELEVANT",
             "HTTP_CONTENT_MD5", "HTTP_SLUG"
         ]
 
@@ -1325,9 +1327,9 @@ class SWORDSpec(object):
         if ip is not None and ip != "true" and ip != "false":
             return "In-Progress must be 'true' or 'false'"
 
-        sm = dict.get("HTTP_SUPPRESS_METADATA")
+        sm = dict.get("HTTP_METADATA_RELEVANT")
         if sm is not None and sm != "true" and sm != "false":
-            return "Suppress-Metadata must be 'true' or 'false'"
+            return "Metadata-Relevant must be 'true' or 'false'"
 
         # there must be both an "atom" and "payload" input or data in web.data()
         webin = web.input()
@@ -1354,9 +1356,9 @@ class SWORDSpec(object):
         if ip is not None and ip != "true" and ip != "false":
             return "In-Progress must be 'true' or 'false'"
 
-        sm = dict.get("HTTP_SUPPRESS_METADATA")
+        sm = dict.get("HTTP_METADATA_RELEVANT")
         if sm is not None and sm != "true" and sm != "false":
-            return "Suppress-Metadata must be 'true' or 'false'"
+            return "Metadata-Relevant must be 'true' or 'false'"
         
         # validates
         return None
@@ -1593,7 +1595,7 @@ class SWORDServer(object):
             # now that we have stored the atom and the content, we can invoke a package ingester over the top to extract
             # all the metadata and any files we want
             packager = self.configuration.package_ingesters[deposit.packaging]()
-            packager.ingest(collection, id, fn, deposit.suppress_metadata)
+            packager.ingest(collection, id, fn, deposit.metadata_relevant)
 
             # An identifier which will resolve to the package just deposited
             deposit_uri = self.um.part_uri(collection, id, fn)
@@ -1682,18 +1684,18 @@ class SWORDServer(object):
         if not self.exists(oid):
             return None
 
-        # remove all the old files before adding the new.  We leave behind the atom file if Suppress-Metadata is
+        # remove all the old files before adding the new.  We leave behind the atom file if Metadata-Relevant is
         # supplied
-        self.dao.remove_content(collection, id, deposit.suppress_metadata)
+        self.dao.remove_content(collection, id, deposit.metadata_relevant)
 
         # store the content file
         fn = self.dao.store_content(collection, id, deposit.content, deposit.filename)
 
         # now that we have stored the atom and the content, we can invoke a package ingester over the top to extract
-        # all the metadata and any files we want.  Notice that we pass in the suppress_metadata flag, so the
+        # all the metadata and any files we want.  Notice that we pass in the metadata_relevant flag, so the
         # packager won't overwrite the existing metadata if it isn't supposed to
         packager = self.configuration.package_ingesters[deposit.packaging]()
-        packager.ingest(collection, id, fn, deposit.suppress_metadata)
+        packager.ingest(collection, id, fn, deposit.metadata_relevant)
 
         # An identifier which will resolve to the package just deposited
         deposit_uri = self.um.part_uri(collection, id, fn)
@@ -1752,9 +1754,9 @@ class SWORDServer(object):
             return None
 
         # remove all the old files before adding the new.
-        # notice that here we allow the metadata file to remain if requested in Suppress-Metadata.  This is a
+        # notice that here we allow the metadata file to remain if requested in Metadata-Relevant.  This is a
         # question with regard to how the standard should work.
-        self.dao.remove_content(collection, id, delete.suppress_metadata)
+        self.dao.remove_content(collection, id, delete.metadata_relevant)
 
         # the aggregation uri
         agg_uri = self.um.agg_uri(collection, id)
@@ -1836,10 +1838,10 @@ class SWORDServer(object):
             fn = self.dao.store_content(collection, id, deposit.content, deposit.filename)
 
             # now that we have stored the atom and the content, we can invoke a package ingester over the top to extract
-            # all the metadata and any files we want.  Notice that we pass in the suppress_metadata flag, so the packager
+            # all the metadata and any files we want.  Notice that we pass in the metadata_relevant flag, so the packager
             # won't overwrite the metadata if it isn't supposed to
             packager = self.configuration.package_ingesters[deposit.packaging]()
-            packager.ingest(collection, id, fn, deposit.suppress_metadata)
+            packager.ingest(collection, id, fn, deposit.metadata_relevant)
 
             # An identifier which will resolve to the package just deposited
             deposit_uri = self.um.part_uri(collection, id, fn)
@@ -1883,13 +1885,7 @@ class SWORDServer(object):
 
         # now just store the atom file
         self.dao.store_atom(collection, id, deposit.atom)
-
-        # now that we have stored the atom, we can invoke a package ingester over the top to extract
-        # all the metadata and any files we want.  Notice that we override suppress_metadata, as there's
-        # no valid uses of Suppress-Metadata during a metadata update!
-        packager = self.configuration.package_ingesters[deposit.packaging]()
-        packager.ingest(collection, id, None, False)
-
+        
         # load the statement
         s = self.dao.load_statement(collection, id)
 
@@ -2709,12 +2705,12 @@ class FeedDisseminator(DisseminationPackager):
         return fpath
 
 class IngestPackager(object):
-    def ingest(self, collection, id, filename, suppress_metadata):
+    def ingest(self, collection, id, filename, metadata_relevant):
         """
         The package with the supplied filename has been placed in the identified container.  This should be inspected
         and unpackaged.  Implementations should note that there is optionally an atom document in the container which
-        may need to be inspected, and this can be retrieved from DAO.get_atom_content().  If the suppress_metadata
-        argument is True, implementations should not change the already extracted metadata in the container
+        may need to be inspected, and this can be retrieved from DAO.get_atom_content().  If the metadata_relevant
+        argument is False, implementations should not change the already extracted metadata in the container
         """
         pass
 
@@ -2723,7 +2719,7 @@ class DefaultIngester(IngestPackager):
         self.dao = DAO()
         self.ns = Namespaces()
         
-    def ingest(self, collection, id, filename, suppress_metadata):
+    def ingest(self, collection, id, filename, metadata_relevant):
         # for the time being this is just going to generate the metadata, it won't bother unpacking the zip
         
         # check for the atom document
@@ -2762,7 +2758,7 @@ class DefaultIngester(IngestPackager):
         self.dao.store_metadata(collection, id, metadata)
 
 class METSDSpaceIngester(IngestPackager):
-    def ingest(self, collection, id, filename, suppress_metadata):
+    def ingest(self, collection, id, filename, metadata_relevant):
         # we don't need to implement this, it is just for example.  it would unzip the file and import the metadata
         # in the zip file
         pass
