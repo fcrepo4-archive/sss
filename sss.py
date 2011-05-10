@@ -1291,7 +1291,7 @@ class DepositRequest(SWORDRequest):
         # content related
         self.content = None
         self.atom = None
-        self.filename = "example.zip"
+        self.filename = "unnamed.file"
 
 class DepositResponse(object):
     """
@@ -1957,12 +1957,13 @@ class SWORDServer(object):
         s = self.dao.load_statement(collection, id)
 
         # now just store the atom file and the content (this may overwrite an existing atom document - this is
-        # intentional)
+        # intentional, although real servers would augment the existing metadata rather than overwrite)
         if deposit.atom is not None:
             self.dao.store_atom(collection, id, deposit.atom)
 
         # store the content file
         if deposit.content is not None:
+            print deposit.filename
             fn = self.dao.store_content(collection, id, deposit.content, deposit.filename)
 
             # now that we have stored the atom and the content, we can invoke a package ingester over the top to extract
