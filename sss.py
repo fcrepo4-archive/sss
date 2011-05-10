@@ -534,6 +534,65 @@ class MediaResource(MediaResourceContent):
             #    return result.receipt
             #else:
             #    return
+            
+    def POST(self, id):
+        """
+        POST either an Atom Multipart request, or a simple package into the specified collection
+        Args:
+        - collection:   The ID of the collection as specified in the requested URL
+        Returns a Deposit Receipt
+        """
+        # authenticate
+        auth = self.authenticate(web)
+        if not auth.success():
+            if auth.target_owner_unknown:
+                spec = SWORDSpec()
+                ss = SWORDServer()
+                error = ss.sword_error(spec.error_target_owner_unknown_uri, auth.obo)
+                web.header("Content-Type", "text/xml")
+                web.ctx.status = "401 Unauthorized"
+                return error
+            return
+
+        # if we get here authentication was successful and we carry on
+        ss = SWORDServer()
+        spec = SWORDSpec()
+
+        # check the validity of the request
+        invalid = spec.validate_deposit_request(web)
+        if invalid is not None:
+            error = ss.sword_error(spec.error_bad_request_uri, invalid)
+            web.header("Content-Type", "text/xml")
+            web.ctx.status = "400 Bad Request"
+            return error
+
+        # take the HTTP request and extract a Deposit object from it
+        deposit = spec.get_deposit(web, auth)
+        
+        # next, before processing the request, let's check that the id is valid, and if not 404 the client
+        if not ss.exists(id):
+            return web.notfound()
+        
+        result = ss.add_content(id, deposit)
+
+        if result is None:
+            return web.notfound()
+
+        cfg = global_configuration
+
+        # created, accepted, or error
+        if result.created:
+            web.header("Content-Type", "application/atom+xml;type=entry")
+            web.header("Location", result.location)
+            web.ctx.status = "201 Created"
+            if cfg.return_deposit_receipt:
+                return result.receipt
+            else:
+                return
+        else:
+            web.header("Content-Type", "text/xml")
+            web.ctx.status = result.error_code
+            return result.error
 
 class Container(SwordHttpHandler):
     """
@@ -1784,6 +1843,73 @@ class SWORDServer(object):
         # finally, assemble the delete response and return
         dr = DeleteResponse()
         dr.receipt = receipt
+        return dr
+        
+    def add_content(self, oid, deposit):
+        """
+        Take the supplied deposit and treat it as a new container with content to be created in the specified collection
+        Args:
+        -collection:    the ID of the collection to be deposited into
+        -deposit:       the DepositRequest object to be processed
+        Returns a DepositResponse object which will contain the Deposit Receipt or a SWORD Error
+        """
+        # check for standard possible errors, and throw if appropriate
+        er = self.check_deposit_errors(deposit)
+        if er is not None:
+            return er
+
+        collection, id = self.um.interpret_oid(oid)
+        
+        # does the collection directory exist?  If not, we can't do a deposit
+        if not self.exists(oid):
+            return None
+
+        # store the content file if one exists, and do some processing on it
+        deposit_uri = None
+        if deposit.content is not None:
+            fn = self.dao.store_content(collection, id, deposit.content, deposit.filename)
+            
+            # NOTE: we don't do any unpacking as it assumed that added content like this is
+            # a plain binary file
+            
+            # An identifier which will resolve to the package just deposited
+            deposit_uri = self.um.part_uri(collection, id, fn)
+
+        # the aggregation uri
+        agg_uri = self.um.agg_uri(collection, id)
+
+        # the Edit-URI
+        edit_uri = self.um.edit_uri(collection, id)
+
+        # create the initial statement
+        s = Statement()
+        s.aggregation_uri = agg_uri
+        s.rem_uri = edit_uri
+        by = deposit.auth.by if deposit.auth is not None else None
+        obo = deposit.auth.obo if deposit.auth is not None else None
+        if deposit_uri is not None:
+            s.original_deposit(deposit_uri, datetime.now(), deposit.packaging, by, obo)
+        s.in_progress = deposit.in_progress
+
+        # store the statement by itself
+        self.dao.store_statement(collection, id, s)
+
+        # create the deposit receipt (which involves getting hold of the item's metadata first if it exists
+        metadata = self.dao.get_metadata(collection, id)
+        receipt = self.deposit_receipt(collection, id, deposit, s, metadata)
+
+        # store the deposit receipt also
+        self.dao.store_deposit_receipt(collection, id, receipt)
+
+        # finally, assemble the deposit response and return
+        dr = DepositResponse()
+        dr.receipt = receipt
+        dr.location = edit_uri
+        if deposit.in_progress:
+            dr.accepted = True
+        else:
+            dr.created = True
+
         return dr
 
     def get_container(self, oid, content_type):
