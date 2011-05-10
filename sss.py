@@ -527,11 +527,13 @@ class MediaResource(MediaResourceContent):
             web.ctx.status = result.error_code
             return result.error
         else:
-            web.header("Content-Type", "application/atom+xml;type=entry")
-            if cfg.return_deposit_receipt:
-                return result.receipt
-            else:
-                return
+            web.ctx.status = "204 No Content" # No Content
+            return
+            #web.header("Content-Type", "application/atom+xml;type=entry")
+            #if cfg.return_deposit_receipt:
+            #    return result.receipt
+            #else:
+            #    return
 
 class Container(SwordHttpHandler):
     """
