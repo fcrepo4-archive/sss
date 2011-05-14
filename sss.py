@@ -148,7 +148,7 @@ urls = (
     '/cont-uri/(.+)', 'MediaResourceContent',   # The URI used in atom:content@src
     '/em-uri/(.+)', 'MediaResource',            # The URI used in atom:link@rel=edit-media
     '/edit-uri/(.+)', 'Container',              # The URI used in atom:link@rel=edit
-    '/state-uri/(.+)', 'StatementHandler'       # The URI used in atom:link@rel=sword:statement
+    '/state-uri/(.+)', 'StatementHandler',      # The URI used in atom:link@rel=sword:statement
 
     '/agg-uri/(.+)', 'Aggregation',              # The URI used to represent the ORE aggregation
 
@@ -846,7 +846,44 @@ class Container(SwordHttpHandler):
 
 class StatementHandler(SwordHttpHandler):
     def GET(self, id):
-        pass
+        # authenticate
+        auth = self.authenticate(web)
+        if not auth.success():
+            if auth.target_owner_unknown:
+                spec = SWORDSpec()
+                ss = SWORDServer()
+                error = ss.sword_error(spec.error_target_owner_unknown_uri, auth.obo)
+                web.header("Content-Type", "text/xml")
+                web.ctx.status = "401 Unauthorized"
+                return error
+            return
+
+        # if we get here authentication was successful and we carry on (we don't care who authenticated)
+        ss = SWORDServer()
+
+        # the get request will contain a suffix which is "rdf" or "atom" depending on
+        # the desired return type
+        content_type = None
+        if id.endswith("rdf"):
+            content_type = "application/rdf+xml"
+            id = id[:-4]
+        elif id.endswith("atom"):
+            content_type = "application/atom+xml;type=feed"
+            id = id[:-5]
+
+        # first thing we need to do is check that there is an object to return, because otherwise we may throw a
+        # 415 Unsupported Media Type without looking first to see if there is even any media to content negotiate for
+        # which would be weird from a client perspective
+        if not ss.exists(id):
+            return web.notfound()
+
+        # did we successfully negotiate a content type?
+        if content_type is None:
+            return web.notfound()
+
+        # now actually get hold of the representation of the statement and send it to the client
+        cont = ss.get_statement(id, content_type)
+        return cont
 
 class Aggregation(SwordHttpHandler):
     def GET(self, id):
@@ -1933,6 +1970,8 @@ class SWORDServer(object):
             return self.dao.get_statement_content(collection, id)
         elif content_type.mimetype() == "application/atom+xml;type=feed":
             return self.dao.get_statement_feed(collection, id)
+        else:
+            return None
 
     def deposit_existing(self, oid, deposit):
         """
@@ -2194,6 +2233,15 @@ class SWORDServer(object):
         entry.append(xml)
 
         return etree.tostring(entry, pretty_print=True)
+
+    def get_statement(self, oid, content_type):
+        collection, id = self.um.interpret_oid(oid)
+        if content_type == "application/rdf+xml":
+            return self.dao.get_statement_content(collection, id)
+        elif content_type == "application/atom+xml;type=feed":
+            return self.dao.get_statement_feed(collection, id)
+        else:
+            return None
 
     def sword_error(self, uri, msg=None):
         entry = etree.Element(self.ns.SWORD + "error", nsmap=self.emap)
@@ -2736,7 +2784,6 @@ class DAO(object):
         """ Read the statement for the specified container """
         f = open(self.get_store_path(collection, id, "sss_statement.atom.xml"), "r")
         return f.read()
-
 
     def get_atom_content(self, collection, id):
         """ Read the statement for the specified container """
