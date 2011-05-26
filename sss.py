@@ -37,7 +37,7 @@ class Configuration(object):
         # to use for On-Behalf-Of requests.  Set authenticate=False if you want to test the server without caring
         # about authentication, set mediation=False if you want to test the server's errors on invalid attempts at
         # mediation
-        self.authenticate = True
+        self.authenticate = False
         self.user = "sword"
         self.password = "sword"
         
@@ -76,6 +76,7 @@ class Configuration(object):
         # Supported package format ingesters; for the Packaging header (dictionary key), the associated class will
         # be used to unpackage deposited content
         self.package_ingesters = {
+                "http://purl.org/net/sword/package/Binary" : DefaultIngester,
                 "http://purl.org/net/sword/package/SimpleZip" : DefaultIngester,
                 "http://purl.org/net/sword/package/METSDSpaceSIP" : METSDSpaceIngester
             }
@@ -90,6 +91,9 @@ class Configuration(object):
 
         # we can turn off deposit receipts, which is allowed by the specification
         self.return_deposit_receipt = True
+        
+        # generate a UUID to represent this request, for logging purposes
+        self.rid = str(uuid.uuid4())
 
 class CherryPyConfiguration(Configuration):
     def __init__(self):
@@ -99,8 +103,8 @@ class ApacheConfiguration(Configuration):
     def __init__(self):
         Configuration.__init__(self)
         self.base_url = 'http://localhost/sss/'
-        self.store_dir = '/home/richard/tmp/store'
-        self.authenticate = True
+        self.store_dir = '/Users/richard/tmp/store'
+        self.authenticate = False
 
 class Namespaces(object):
     """
@@ -173,12 +177,14 @@ class SwordHttpHandler(object):
 
         # we may have turned authentication off for development purposes
         if not cfg.authenticate:
-            print "Authentication is turned OFF"
+            print cfg.rid + " Authentication is turned OFF"
             return Auth(cfg.user)
+        else:
+        	print cfg.rid + " Authentication required"
 
         # if we want to authenticate, but there is no auth string then bounce with a 401 (realm SSS)
         if auth is None:
-            print "No authentication credentials supplied, requesting authentication"
+            print cfg.rid + " No authentication credentials supplied, requesting authentication"
             web.header('WWW-Authenticate','Basic realm="SSS"')
             web.ctx.status = '401 Unauthorized'
             return Auth()
@@ -187,17 +193,17 @@ class SwordHttpHandler(object):
             auth = re.sub('^Basic ','',auth)
             username, password = base64.decodestring(auth).split(':')
 
-            print "Authentication details: " + str(username) + ":" + str(password) + "/" + str(obo)
+            print cfg.rid + " Authentication details: " + str(username) + ":" + str(password) + "/" + str(obo)
 
             # if the username and password don't match, bounce the user with a 401
             # meanwhile if the obo header has been passed but doesn't match the config value also bounce
             # witha 401 (I know this is an odd looking if/else but it's for clarity of what's going on
             if username != cfg.user or password != cfg.password:
-                print "Authentication Failed"
+                print cfg.rid + " Authentication Failed; returning 401"
                 web.ctx.status = '401 Unauthorized'
                 return Auth()
             elif obo is not None and obo != cfg.obo:
-                print "Authentication Failed with Target Owner Unknown"
+                print cfg.rid + " Authentication Failed with Target Owner Unknown"
                 # we throw a sword error for TargetOwnerUnknown
                 return Auth(cfg.user, obo, target_owner_unknown=True)
 
@@ -212,7 +218,8 @@ class ServiceDocument(SwordHttpHandler):
     """
     def GET(self, sub=None):
         """ GET the service document - returns an XML document """
-
+        print global_configuration.rid + " GET on Service Document"
+        
         # authenticate
         auth = self.authenticate(web)
         if not auth.success():
@@ -242,7 +249,9 @@ class Collection(SwordHttpHandler):
         - collection:   The ID of the collection as specified in the requested URL
         Returns an XML document with some metadata about the collection and the contents of that collection
         """
-       # authenticate
+        print global_configuration.rid + " GET on Collection: list collection contents"
+        
+        # authenticate
         auth = self.authenticate(web)
         if not auth.success():
             if auth.target_owner_unknown:
@@ -266,6 +275,8 @@ class Collection(SwordHttpHandler):
         - collection:   The ID of the collection as specified in the requested URL
         Returns a Deposit Receipt
         """
+        print global_configuration.rid + " POST to Collection: create new item"
+        
         # authenticate
         auth = self.authenticate(web)
         if not auth.success():
@@ -301,22 +312,18 @@ class Collection(SwordHttpHandler):
 
         # created, accepted, or error
         if result.created:
+            print cfg.rid + " Item created"
             web.header("Content-Type", "application/atom+xml;type=entry")
             web.header("Location", result.location)
             web.ctx.status = "201 Created"
             if cfg.return_deposit_receipt:
+                print cfg.rid + " Returning deposit receipt"
                 return result.receipt
             else:
-                return
-        elif result.accepted:
-            web.header("Content-Type", "application/atom+xml;type=entry")
-            web.header("Location", result.location)
-            web.ctx.status = "202 Accepted"
-            if cfg.return_deposit_receipt:
-                return result.receipt
-            else:
+                print cfg.rid + " Omitting deposit receipt"
                 return
         else:
+            print cfg.rid + " Returning Error"
             web.header("Content-Type", "text/xml")
             web.ctx.status = result.error_code
             return result.error
@@ -451,20 +458,12 @@ class MediaResource(MediaResourceContent):
 
         # created, accepted or error
         if result.created:
+            print cfg.rid + " Content replaced"
             web.header("Content-Type", "application/atom+xml;type=entry")
-            web.ctx.status = "200 OK" # notice that this is different from the POST as per AtomPub
-            if cfg.return_deposit_receipt:
-                return result.receipt
-            else:
-                return
-        elif result.accepted:
-            web.header("Content-Type", "application/atom+xml;type=entry")
-            web.ctx.status = "202 Accepted"
-            if cfg.return_deposit_receipt:
-                return result.receipt
-            else:
-                return
+            web.ctx.status = "204 No Content" # notice that this is different from the POST as per AtomPub
+            return
         else:
+            print cfg.rid + " Returning Error"
             web.header("Content-Type", "text/xml")
             web.ctx.status = result.error_code
             return result.error
@@ -529,11 +528,6 @@ class MediaResource(MediaResourceContent):
         else:
             web.ctx.status = "204 No Content" # No Content
             return
-            #web.header("Content-Type", "application/atom+xml;type=entry")
-            #if cfg.return_deposit_receipt:
-            #    return result.receipt
-            #else:
-            #    return
             
     def POST(self, id):
         """
@@ -714,13 +708,6 @@ class Container(SwordHttpHandler):
                 return result.receipt
             else:
                 return
-        elif result.accepted:
-            web.header("Content-Type", "application/atom+xml;type=entry")
-            web.ctx.status = "202 Accepted"
-            if cfg.return_deposit_receipt:
-                return result.receipt
-            else:
-                return
         else:
             web.header("Content-Type", "text/xml")
             web.ctx.status = result.error_code
@@ -767,18 +754,11 @@ class Container(SwordHttpHandler):
         if result.created:
             web.header("Content-Type", "application/atom+xml;type=entry")
             web.header("Location", result.location)
-            web.ctx.status = "200 OK"
             if cfg.return_deposit_receipt:
+                web.ctx.status = "200 OK"
                 return result.receipt
             else:
-                return
-        elif result.accepted:
-            web.header("Content-Type", "application/atom+xml;type=entry")
-            web.header("Location", result.location)
-            web.ctx.status = "202 Accepted"
-            if cfg.return_deposit_receipt:
-                return result.receipt
-            else:
+                web.ctx.status = "204 No Content"
                 return
         else:
             web.header("Content-Type", "text/xml")
@@ -1432,7 +1412,9 @@ class SWORDSpec(object):
         # there must be both an "atom" and "payload" input or data in web.data()
         webin = web.input()
         if len(webin) != 2 and len(webin) > 0:
-            return "Multipart request has more than 2 parts"
+            print webin.keys()
+            print webin
+            return "Multipart request does not contain exactly 2 parts"
         if len(webin) >= 2 and not webin.has_key("atom") and not webin.has_key("payload"):
             return "Multipart request must contain Content-Dispositions with names 'atom' and 'payload'"
         if len(webin) > 0 and not allow_multipart:
@@ -1728,11 +1710,8 @@ class SWORDServer(object):
         dr = DepositResponse()
         dr.receipt = receipt
         dr.location = edit_uri
-        if deposit.in_progress:
-            dr.accepted = True
-        else:
-            dr.created = True
-
+        dr.created = True
+        
         return dr
 
     def get_media_resource(self, oid, content_type):
@@ -1825,11 +1804,7 @@ class SWORDServer(object):
         # finally, assemble the deposit response and return
         dr = DepositResponse()
         dr.receipt = receipt
-        if deposit.in_progress:
-            dr.accepted = True
-        else:
-            dr.created = True
-
+        dr.created = True
         return dr
 
     def delete_content(self, oid, delete):
@@ -1942,11 +1917,7 @@ class SWORDServer(object):
         dr = DepositResponse()
         dr.receipt = receipt
         dr.location = edit_uri
-        if deposit.in_progress:
-            dr.accepted = True
-        else:
-            dr.created = True
-
+        dr.created = True
         return dr
 
     def get_container(self, oid, content_type):
@@ -2034,11 +2005,7 @@ class SWORDServer(object):
         # finally, assemble the deposit response and return
         dr = DepositResponse()
         dr.receipt = receipt
-        if deposit.in_progress:
-            dr.accepted = True
-        else:
-            dr.created = True
-
+        dr.created = True
         return dr
 
     def update_metadata(self, oid, deposit):
@@ -2068,11 +2035,7 @@ class SWORDServer(object):
         # finally, assemble the deposit response and return
         dr = DepositResponse()
         dr.receipt = receipt
-        if deposit.in_progress:
-            dr.accepted = True
-        else:
-            dr.created = True
-
+        dr.created = True
         return dr
 
     def delete_container(self, oid, delete):
@@ -2106,19 +2069,20 @@ class SWORDServer(object):
         -cont_uri:   The Cont-URI from which the media resource content can be retrieved
         -em_uri:    The EM-URI (Edit Media) at which operations on the media resource can be conducted
         -edit_uri:  The Edit-URI at which operations on the container can be conducted
-        -statement: A Statement object to be embedded in the receipt as foreign markup
+        -statement: A Statement object to be embedded in the receipt as foreign markup (deprecated)
         Returns a string representation of the deposit receipt
         """
         # assemble the URIs we are going to need
-
+        
         # the atom entry id
         drid = self.um.atom_id(collection, id)
 
         # the Cont-URI
         cont_uri = self.um.cont_uri(collection, id)
 
-        # the EM-URI
+        # the EM-URI and SE-IRI
         em_uri = self.um.em_uri(collection, id)
+        se_uri = em_uri
 
         # the Edit-URI
         edit_uri = self.um.edit_uri(collection, id)
@@ -2211,6 +2175,10 @@ class SWORDServer(object):
         emfeedlink.set("type", "application/atom+xml;type=feed")
         emfeedlink.set("href", em_uri + ".atom")
 
+        # SE-URI (Sword edit - same as media resource)
+        selink = etree.SubElement(entry, self.ns.ATOM + "link")
+        selink.set("rel", "http://purl.org/net/sword/terms/add")
+        selink.set("href", se_uri)
 
         # supported packaging formats
         for disseminator in self.configuration.sword_disseminate_package:
@@ -2228,9 +2196,10 @@ class SWORDServer(object):
         state2.set("type", "application/rdf+xml")
         state2.set("href", ore_statement_uri)
 
+        # we no longer do this ....
         # finally, embed the ORE version of the statemet
-        xml = statement.get_rdf_xml()
-        entry.append(xml)
+        #xml = statement.get_rdf_xml()
+        #entry.append(xml)
 
         return etree.tostring(entry, pretty_print=True)
 
@@ -2605,6 +2574,7 @@ class DAO(object):
         self.configuration = global_configuration
 
         # first thing to do is create the store if it does not already exist
+        print self.configuration.store_dir
         if not os.path.exists(self.configuration.store_dir):
             os.makedirs(self.configuration.store_dir)
 
