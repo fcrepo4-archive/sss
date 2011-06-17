@@ -2915,7 +2915,7 @@ class METSDSpaceIngester(IngestPackager):
 #######################################################################
 # This is the bit which actually invokes the web.py server when this module is run
 
-global_configuration = ApacheConfiguration()
+global_configuration = CherryPyConfiguration()
 
 # if we run the file as a mod_wsgi module, do this
 application = web.application(urls, globals()).wsgifunc()
