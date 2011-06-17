@@ -4,7 +4,7 @@ __version__ = "0.1"
 __author__ = ["Richard Jones <richard@oneoverzero.com>"]
 __license__ = "public domain"
 
-import web, uuid, os, re, base64, hashlib, urllib
+import web, uuid, os, re, base64, hashlib, urllib, sys
 from lxml import etree
 from datetime import datetime
 from zipfile import ZipFile
@@ -25,7 +25,7 @@ if ssl:
 class Configuration(object):
     def __init__(self):
         # The base url of the webservice where SSS is deployed
-        self.base_url = "http://localhost:8080/"
+        self.base_url = "http://localhost:%s/" % (sys.argv[1] if len(sys.argv) > 1 else '8080')
 
         # The number of collections that SSS will create and give to users to deposit content into
         self.num_collections = 10
