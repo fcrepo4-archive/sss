@@ -161,14 +161,12 @@ class CURL(object):
         parts.append(self.auth_url(self.em_uri))
         return " ".join(parts)
 
-    def delete_content(self, obo=False, in_progress=False, suppress_metadata=False):
+    def delete_content(self, obo=False, in_progress=False):
         parts = [self.cmd, self.delete]
         if obo:
             parts.append(self.header(self.on_behalf_of, self.obo_user))
         if in_progress:
             parts.append(self.header(self.in_progress, self.true_value))
-        if suppress_metadata:
-            parts.append(self.header(self.suppress_metadata, self.true_value))
         parts.append(self.auth_url(self.em_uri))
         return " ".join(parts)
 
@@ -328,8 +326,6 @@ def curl_batch(sid, cid, oid):
     print CURL(col_id=cid, oid=oid).delete_content()
 
     print CURL(col_id=cid, oid=oid).delete_content(in_progress=True)
-
-    print CURL(col_id=cid, oid=oid).delete_content(suppress_metadata=True)
 
     # GET A REPRESENTATION OF THE CONTAINER
     #######################################

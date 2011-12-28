@@ -470,12 +470,6 @@ class MediaResource(MediaResourceContent):
             web.ctx.status = result.error_code
             return result.error
 
-
-
-
-
-
-
     def DELETE(self, id):
         """
         DELETE the contents of an object in the store (but not the object's container), leaving behind an empty
@@ -536,6 +530,14 @@ class MediaResource(MediaResourceContent):
         else:
             web.ctx.status = "204 No Content" # No Content
             return
+    
+    
+    
+    
+    
+    
+    
+    
     
     # FIXME: it is highly likely that this should be removed
     def POST(self, id):
@@ -1869,9 +1871,9 @@ class SWORDServer(object):
             return None
 
         # remove all the old files before adding the new.
-        # notice that here we allow the metadata file to remain if requested in Metadata-Relevant.  This is a
-        # question with regard to how the standard should work.
-        self.dao.remove_content(collection, id, delete.metadata_relevant)
+        # notice that we keep the metadata, as this is considered bound to the
+        # container and not the media resource.
+        self.dao.remove_content(collection, id, True)
 
         # the aggregation uri
         agg_uri = self.um.agg_uri(collection, id)
@@ -1888,8 +1890,9 @@ class SWORDServer(object):
         # store the statement by itself
         self.dao.store_statement(collection, id, s)
 
-        # create the deposit receipt
-        receipt = self.deposit_receipt(collection, id, delete, s, None)
+        # create the deposit receipt (which involves getting hold of the item's metadata first if it exists
+        metadata = self.dao.get_metadata(collection, id)
+        receipt = self.deposit_receipt(collection, id, delete, s, metadata)
 
         # store the deposit receipt also
         self.dao.store_deposit_receipt(collection, id, receipt)
