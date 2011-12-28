@@ -208,6 +208,25 @@ class CURL(object):
             parts.append(self.header(self.suppress_metadata, self.true_value))
         parts.append(self.auth_url(self.edit_uri))
         return " ".join(parts)
+        
+    def replace(self, obo=False, in_progress=False, multipart=False, checksum=False, suppress_metadata=False, atom_only=False):
+        parts = [self.cmd, self.put]
+        parts.append(self.file_upload(multipart=multipart, atom_only=atom_only))
+        if not atom_only:
+            parts.append(self.get_content_disp(multipart=multipart))
+        parts.append(self.get_content_type(multipart=multipart, atom_only=atom_only))
+        if not atom_only:
+            parts.append(self.header(self.packaging, self.package_format))
+        if obo:
+            parts.append(self.header(self.on_behalf_of, self.obo_user))
+        if in_progress:
+            parts.append(self.header(self.in_progress, self.true_value))
+        if checksum and not multipart:
+            parts.append(self.header(self.content_md5, self.checksum))
+        if suppress_metadata:
+            parts.append(self.header(self.suppress_metadata, self.true_value))
+        parts.append(self.auth_url(self.edit_uri))
+        return " ".join(parts)
 
     def delete_container(self, obo=False):
         parts = [self.cmd, self.delete]
@@ -326,10 +345,6 @@ def curl_batch(sid, cid, oid):
 
     print CURL(col_id=cid, oid=oid).deposit_additional(checksum=True)
 
-    print CURL(col_id=cid, oid=oid).deposit_additional(multipart=True)
-
-    print CURL(col_id=cid, oid=oid).deposit_additional(multipart=True, suppress_metadata=True)
-
     print CURL(col_id=cid, oid=oid, package_format="http://purl.org/net/sword/package/METSDSpaceSIP").deposit_additional()
 
     # ADD MORE METADATA
@@ -343,6 +358,13 @@ def curl_batch(sid, cid, oid):
     print CURL(col_id=cid, oid=oid).update_metadata()
 
     print CURL(col_id=cid, oid=oid).update_metadata(in_progress=True)
+    
+    # REPLACE METADATA AND CONTENT
+    ##############################
+    
+    print CURL(col_id=cid, oid=oid).replace(multipart=True)
+
+    print CURL(col_id=cid, oid=oid).replace(multipart=True, suppress_metadata=True)
 
     # DELETE THE OBJECT
     ###################

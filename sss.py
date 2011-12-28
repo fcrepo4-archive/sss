@@ -462,7 +462,6 @@ class MediaResource(MediaResourceContent):
         # created, accepted or error
         if result.created:
             print cfg.rid + " Content replaced"
-            web.header("Content-Type", "application/atom+xml;type=entry")
             web.ctx.status = "204 No Content" # notice that this is different from the POST as per AtomPub
             return
         else:
@@ -470,6 +469,12 @@ class MediaResource(MediaResourceContent):
             web.header("Content-Type", "text/xml")
             web.ctx.status = result.error_code
             return result.error
+
+
+
+
+
+
 
     def DELETE(self, id):
         """
@@ -531,7 +536,8 @@ class MediaResource(MediaResourceContent):
         else:
             web.ctx.status = "204 No Content" # No Content
             return
-            
+    
+    # FIXME: it is highly likely that this should be removed
     def POST(self, id):
         """
         POST either an Atom Multipart request, or a simple package into the specified collection
@@ -654,6 +660,69 @@ class Container(SwordHttpHandler):
         cont = ss.get_container(id, content_type)
         return cont
 
+    def PUT(self, id):
+        """
+        PUT a new Entry over the existing entry, or a multipart request over
+        both the existing metadata and the existing content
+        """
+        cfg = global_configuration
+        
+        # authenticate
+        auth = self.authenticate(web)
+        if not auth.success():
+            if auth.target_owner_unknown:
+                spec = SWORDSpec()
+                ss = SWORDServer()
+                error = ss.sword_error(spec.error_target_owner_unknown_uri, auth.obo)
+                web.header("Content-Type", "text/xml")
+                web.ctx.status = "401 Unauthorized"
+                return error
+            return
+
+        # if we get here authentication was successful and we carry on
+        ss = SWORDServer()
+        spec = SWORDSpec()
+
+        # check the validity of the request
+        invalid = spec.validate_deposit_request(web)
+        if invalid is not None:
+            error = ss.sword_error(spec.error_bad_request_uri, invalid)
+            web.header("Content-Type", "text/xml")
+            web.ctx.status = "400 Bad Request"
+            return error
+
+        # take the HTTP request and extract a Deposit object from it
+        deposit = spec.get_deposit(web, auth)
+        result = ss.replace(id, deposit)
+
+        # FIXME: this is no longer relevant
+        # take the HTTP request and extract a Deposit object from it
+        #deposit = spec.get_deposit(web, auth, atom_only=True)
+        #result = ss.update_metadata(id, deposit)
+
+        if result is None:
+            return web.notfound()
+
+        # created, accepted, or error
+        if result.created:
+            web.header("Location", result.location)
+            if cfg.return_deposit_receipt:
+                web.header("Content-Type", "application/atom+xml;type=entry")
+                web.ctx.status = "200 OK"
+                return result.receipt
+            else:
+                web.ctx.status = "204 No Content"
+                return
+        else:
+            web.header("Content-Type", "text/xml")
+            web.ctx.status = result.error_code
+            return result.error
+
+
+
+
+
+    # FIXME: this may need to be removed
     def POST(self, id):
         """
         POST some new content into the container identified by the supplied id
@@ -710,58 +779,6 @@ class Container(SwordHttpHandler):
             if cfg.return_deposit_receipt:
                 return result.receipt
             else:
-                return
-        else:
-            web.header("Content-Type", "text/xml")
-            web.ctx.status = result.error_code
-            return result.error
-
-    def PUT(self, id):
-        """
-        PUT a new Entry over the existing entry
-        """
-        cfg = global_configuration
-        
-        # authenticate
-        auth = self.authenticate(web)
-        if not auth.success():
-            if auth.target_owner_unknown:
-                spec = SWORDSpec()
-                ss = SWORDServer()
-                error = ss.sword_error(spec.error_target_owner_unknown_uri, auth.obo)
-                web.header("Content-Type", "text/xml")
-                web.ctx.status = "401 Unauthorized"
-                return error
-            return
-
-        # if we get here authentication was successful and we carry on
-        ss = SWORDServer()
-        spec = SWORDSpec()
-
-        # check the validity of the request
-        invalid = spec.validate_deposit_request(web)
-        if invalid is not None:
-            error = ss.sword_error(spec.error_bad_request_uri, invalid)
-            web.header("Content-Type", "text/xml")
-            web.ctx.status = "400 Bad Request"
-            return error
-
-        # take the HTTP request and extract a Deposit object from it
-        deposit = spec.get_deposit(web, auth, atom_only=True)
-        result = ss.update_metadata(id, deposit)
-
-        if result is None:
-            return web.notfound()
-
-        # created, accepted, or error
-        if result.created:
-            web.header("Content-Type", "application/atom+xml;type=entry")
-            web.header("Location", result.location)
-            if cfg.return_deposit_receipt:
-                web.ctx.status = "200 OK"
-                return result.receipt
-            else:
-                web.ctx.status = "204 No Content"
                 return
         else:
             web.header("Content-Type", "text/xml")
@@ -1679,7 +1696,6 @@ class SWORDServer(object):
         if deposit.atom is not None:
             entry_ingester = self.configuration.entry_ingester()
             entry_ingester.ingest(collection, id, deposit.atom)
-            # self.dao.store_atom(collection, id, deposit.atom)
 
         # store the content file if one exists, and do some processing on it
         deposit_uri = None
@@ -1775,9 +1791,19 @@ class SWORDServer(object):
         if not self.exists(oid):
             return None
 
-        # remove all the old files before adding the new.  We leave behind the atom file if Metadata-Relevant is
-        # supplied
-        self.dao.remove_content(collection, id, deposit.metadata_relevant)
+        # first figure out what to do about the metadata
+        keep_atom = False
+        if deposit.atom is not None:
+            self.update_metadata(oid, deposit)
+            keep_atom = True
+            # if this is atom only, then we are finished just by updating
+            # the metadata
+            if deposit.content is None:
+                return
+
+        # remove all the old files before adding the new.  We always leave
+        # behind the metadata; this will be overwritten later if necessary
+        self.dao.remove_content(collection, id, True, keep_atom)
 
         # store the content file
         fn = self.dao.store_content(collection, id, deposit.content, deposit.filename)
@@ -1809,8 +1835,9 @@ class SWORDServer(object):
         # store the statement by itself
         self.dao.store_statement(collection, id, s)
 
-        # create the deposit receipt
-        receipt = self.deposit_receipt(collection, id, deposit, s, None)
+        # create the deposit receipt (which involves getting hold of the item's metadata first if it exists
+        metadata = self.dao.get_metadata(collection, id)
+        receipt = self.deposit_receipt(collection, id, deposit, s, metadata)
 
         # store the deposit receipt also
         self.dao.store_deposit_receipt(collection, id, receipt)
@@ -1818,6 +1845,7 @@ class SWORDServer(object):
         # finally, assemble the deposit response and return
         dr = DepositResponse()
         dr.receipt = receipt
+        dr.location = edit_uri
         dr.created = True
         return dr
 
@@ -1983,7 +2011,8 @@ class SWORDServer(object):
         # now just store the atom file and the content (this may overwrite an existing atom document - this is
         # intentional, although real servers would augment the existing metadata rather than overwrite)
         if deposit.atom is not None:
-            self.dao.store_atom(collection, id, deposit.atom)
+            entry_ingester = self.configuration.entry_ingester()
+            entry_ingester.ingest(collection, id, deposit.atom)
 
         # store the content file
         if deposit.content is not None:
@@ -2010,8 +2039,9 @@ class SWORDServer(object):
             # store the statement by itself
             self.dao.store_statement(collection, id, s)
 
-        # create the deposit receipt
-        receipt = self.deposit_receipt(collection, id, deposit, s, None)
+        # create the deposit receipt (which involves getting hold of the item's metadata first if it exists
+        metadata = self.dao.get_metadata(collection, id)
+        receipt = self.deposit_receipt(collection, id, deposit, s, metadata)
 
         # store the deposit receipt also
         self.dao.store_deposit_receipt(collection, id, receipt)
@@ -2035,15 +2065,18 @@ class SWORDServer(object):
             return None
 
         # now just store the atom file
-        self.dao.store_atom(collection, id, deposit.atom)
+        if deposit.atom is not None:
+            entry_ingester = self.configuration.entry_ingester()
+            entry_ingester.ingest(collection, id, deposit.atom)
         
         # load the statement
         s = self.dao.load_statement(collection, id)
 
-        # create the deposit receipt
-        receipt = self.deposit_receipt(collection, id, deposit, s, None)
+        # create the deposit receipt (which involves getting hold of the item's metadata first if it exists
+        metadata = self.dao.get_metadata(collection, id)
+        receipt = self.deposit_receipt(collection, id, deposit, s, metadata)
 
-        # store the deposit receipt
+        # store the deposit receipt also
         self.dao.store_deposit_receipt(collection, id, receipt)
 
         # finally, assemble the deposit response and return
@@ -2719,7 +2752,7 @@ class DAO(object):
             md[tag] = dc.text.strip()
         return md
 
-    def remove_content(self, collection, id, keep_metadata=False):
+    def remove_content(self, collection, id, keep_metadata=False, keep_atom=False):
         """
         Remove all the content from the specified container.  If keep_metadata is True then the sss_metadata.xml
         file will not be removed
@@ -2729,6 +2762,8 @@ class DAO(object):
             # if there is a metadata.xml but metadata suppression on the deposit is turned on
             # then leave it alone
             if file == "sss_metadata.xml" and keep_metadata:
+                continue
+            if file == "atom.xml" and keep_atom:
                 continue
             dpath = os.path.join(odir, file)
             os.remove(dpath)
@@ -2890,7 +2925,7 @@ class DefaultIngester(IngestPackager):
         self.dao = DAO()
         self.ns = Namespaces()
         
-    def ingest(self, collection, id, filename, metadata_relevant):
+    def ingest(self, collection, id, filename, metadata_relevant=True):
         # for the time being this is just going to generate the metadata, it won't bother unpacking the zip
         
         # check for the atom document
@@ -2899,6 +2934,10 @@ class DefaultIngester(IngestPackager):
             # there's no metadata to extract so just leave it
             return
 
+        # if the metadata is not relevant, then we don't need to continue
+        if not metadata_relevant:
+            return
+            
         metadata = {}
         entry = etree.fromstring(atom)
 
