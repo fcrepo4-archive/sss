@@ -531,18 +531,9 @@ class MediaResource(MediaResourceContent):
             web.ctx.status = "204 No Content" # No Content
             return
     
-    
-    
-    
-    
-    
-    
-    
-    
-    # FIXME: it is highly likely that this should be removed
     def POST(self, id):
         """
-        POST either an Atom Multipart request, or a simple package into the specified collection
+        POST a simple package into the specified collection
         Args:
         - collection:   The ID of the collection as specified in the requested URL
         Returns a Deposit Receipt
@@ -720,11 +711,8 @@ class Container(SwordHttpHandler):
             web.ctx.status = result.error_code
             return result.error
 
-
-
-
-
-    # FIXME: this may need to be removed
+    # NOTE: this POST action on the Container is represented in the specification
+    # by a POST to the SE-IRI (The SWORD Edit IRI), sections 6.7.2 and 6.7.3
     def POST(self, id):
         """
         POST some new content into the container identified by the supplied id
@@ -777,6 +765,7 @@ class Container(SwordHttpHandler):
         # created, accepted or error
         if result.created:
             web.header("Content-Type", "application/atom+xml;type=entry")
+            web.header("Location", result.location)
             web.ctx.status = "200 OK"
             if cfg.return_deposit_receipt:
                 return result.receipt
@@ -1926,8 +1915,11 @@ class SWORDServer(object):
         if deposit.content is not None:
             fn = self.dao.store_content(collection, id, deposit.content, deposit.filename)
             
-            # NOTE: we don't do any unpacking as it assumed that added content like this is
-            # a plain binary file
+            # NOTE: we don't do any unpacking as SSS assumes that added content like this is
+            # a plain binary file (so the Location header we will return will be the Part URI)
+            
+            # NOTE: therefore, metadata relevance is not employed by the simple sword server
+            # in this instance, but should be considered by other implementations
             
             # An identifier which will resolve to the package just deposited
             deposit_uri = self.um.part_uri(collection, id, fn)
@@ -1961,7 +1953,7 @@ class SWORDServer(object):
         # finally, assemble the deposit response and return
         dr = DepositResponse()
         dr.receipt = receipt
-        dr.location = edit_uri
+        dr.location = deposit_uri
         dr.created = True
         return dr
 
@@ -2014,8 +2006,13 @@ class SWORDServer(object):
         # now just store the atom file and the content (this may overwrite an existing atom document - this is
         # intentional, although real servers would augment the existing metadata rather than overwrite)
         if deposit.atom is not None:
+            # when we ingest the atom file, the existing atom doc may get overwritten,
+            # but the spec requires that we only add metadata, not overwrite anything
+            # (if possible).  For a purist implementation, then, we mark additive=True
+            # in the call to the ingest method, so all metadata is added to whatever
+            # is already there
             entry_ingester = self.configuration.entry_ingester()
-            entry_ingester.ingest(collection, id, deposit.atom)
+            entry_ingester.ingest(collection, id, deposit.atom, True)
 
         # store the content file
         if deposit.content is not None:
@@ -2052,6 +2049,7 @@ class SWORDServer(object):
         # finally, assemble the deposit response and return
         dr = DepositResponse()
         dr.receipt = receipt
+        dr.location = self.um.edit_uri(collection, id)
         dr.created = True
         return dr
 
@@ -2149,11 +2147,11 @@ class SWORDServer(object):
         if metadata is None:
             metadata = {}
         if not metadata.has_key("title"):
-            metadata["title"] = "SWORD Deposit"
+            metadata["title"] = ["SWORD Deposit"]
         if not metadata.has_key("creator"):
-            metadata["creator"] = "SWORD Client"
+            metadata["creator"] = ["SWORD Client"]
         if not metadata.has_key("abstract"):
-            metadata["abstract"] = "Content deposited with SWORD client"
+            metadata["abstract"] = ["Content deposited with SWORD client"]
 
         # Now assemble the deposit receipt
 
@@ -2162,7 +2160,7 @@ class SWORDServer(object):
 
         # Title from metadata
         title = etree.SubElement(entry, self.ns.ATOM + "title")
-        title.text = metadata['title']
+        title.text = metadata['title'][0]
 
         # Atom Entry ID
         id = etree.SubElement(entry, self.ns.ATOM + "id")
@@ -2175,12 +2173,12 @@ class SWORDServer(object):
         # Author field from metadata
         author = etree.SubElement(entry, self.ns.ATOM + "author")
         name = etree.SubElement(author, self.ns.ATOM + "name")
-        name.text = metadata['creator']
+        name.text = metadata['creator'][0]
 
         # Summary field from metadata
         summary = etree.SubElement(entry, self.ns.ATOM + "summary")
         summary.set("type", "text")
-        summary.text = metadata['abstract']
+        summary.text = metadata['abstract'][0]
 
         
         # Generator - identifier for this server software
@@ -2190,8 +2188,9 @@ class SWORDServer(object):
 
         # now embed all the metadata as foreign markup
         for field in metadata.keys():
-            fdc = etree.SubElement(entry, self.ns.DC + field)
-            fdc.text = metadata[field]
+            for v in metadata[field]:
+                fdc = etree.SubElement(entry, self.ns.DC + field)
+                fdc.text = v
 
         # verbose description
         vd = etree.SubElement(entry, self.ns.SWORD + "verboseDescription")
@@ -2735,8 +2734,9 @@ class DAO(object):
         """ Store the supplied metadata dictionary in the object idenfied by the id in the specified collection """
         md = etree.Element(self.ns.DC + "metadata", nsmap=self.mdmap)
         for dct in metadata.keys():
-            element = etree.SubElement(md, self.ns.DC + dct)
-            element.text = metadata[dct]
+            for v in metadata[dct]:
+                element = etree.SubElement(md, self.ns.DC + dct)
+                element.text = v
         s = etree.tostring(md, pretty_print=True)
         mfile = os.path.join(self.configuration.store_dir, collection, id, "sss_metadata.xml")
         self.save(mfile, s)
@@ -2752,7 +2752,10 @@ class DAO(object):
             tag = dc.tag
             if tag.startswith(self.ns.DC):
                 tag = tag[len(self.ns.DC):]
-            md[tag] = dc.text.strip()
+            if md.has_key(tag):
+                md[tag].append(dc.text.strip())
+            else:
+                md[tag] = [dc.text.strip()]
         return md
 
     def remove_content(self, collection, id, keep_metadata=False, keep_atom=False):
@@ -2945,30 +2948,41 @@ class DefaultIngester(IngestPackager):
         entry = etree.fromstring(atom)
 
         # go through each element in the atom entry and just process the ones we care about
-        # explicitly retrieve the atom based metadata first, then we'll overwrite it later with
-        # the dcterms metadata where appropriate
+        # explicitly retrieve the atom based metadata first
         for element in entry.getchildren():
             if element.tag == self.ns.ATOM + "title":
-                metadata["title"] = element.text.strip()
+                self.a_insert(metadata, "title", element.text.strip())
             if element.tag == self.ns.ATOM + "updated":
-                metadata["date"] = element.text.strip()
+                self.a_insert(metadata, "date", element.text.strip())
             if element.tag == self.ns.ATOM + "author":
                 authors = ""
                 for names in element.getchildren():
                     authors += names.text.strip() + " "
-                metadata["creator"] = authors
+                self.a_insert(metadata, "creator", authors.strip())
             if element.tag == self.ns.ATOM + "summary":
-                metadata["abstract"] = element.text.strip()
+                self.a_insert(metadata, "abstract", element.text.strip())
 
         # now go through and retrieve the dcterms from the entry
         for element in entry.getchildren():
             if not isinstance(element.tag, basestring):
                 continue
                 
+            # we operate an additive policy with metadata.  Duplicate
+            # keys are allowed, but duplicate key/value pairs are not.
             if element.tag.startswith(self.ns.DC):
-                metadata[element.tag[len(self.ns.DC):]] = element.text.strip()
+                key = element.tag[len(self.ns.DC):]
+                val = element.text.strip()
+                self.a_insert(metadata, key, val)
 
         self.dao.store_metadata(collection, id, metadata)
+        
+    def a_insert(self, d, key, value):
+        if d.has_key(key):
+            vs = d[key]
+            if value not in vs:
+                d[key].append(value)
+        else:
+            d[key] = [value]
 
 class METSDSpaceIngester(IngestPackager):
     def ingest(self, collection, id, filename, metadata_relevant):
@@ -2981,39 +2995,54 @@ class DefaultEntryIngester(object):
         self.dao = DAO()
         self.ns = Namespaces()
         
-    def ingest(self, collection, id, atom):
+    def ingest(self, collection, id, atom, additive=False):
         # store the atom
         self.dao.store_atom(collection, id, atom)
         
-        # now extract the metadata
+        # now extract/augment the metadata
         metadata = {}
+        if additive:
+            # start with any existing metadata
+            metadata = self.dao.get_metadata(collection, id)
+        
         entry = etree.fromstring(atom)
 
         # go through each element in the atom entry and just process the ones we care about
-        # explicitly retrieve the atom based metadata first, then we'll overwrite it later with
-        # the dcterms metadata where appropriate
+        # explicitly retrieve the atom based metadata first
         for element in entry.getchildren():
             if element.tag == self.ns.ATOM + "title":
-                metadata["title"] = element.text.strip()
+                self.a_insert(metadata, "title", element.text.strip())
             if element.tag == self.ns.ATOM + "updated":
-                metadata["date"] = element.text.strip()
+                self.a_insert(metadata, "date", element.text.strip())
             if element.tag == self.ns.ATOM + "author":
                 authors = ""
                 for names in element.getchildren():
                     authors += names.text.strip() + " "
-                metadata["creator"] = authors
+                self.a_insert(metadata, "creator", authors.strip())
             if element.tag == self.ns.ATOM + "summary":
-                metadata["abstract"] = element.text.strip()
+                self.a_insert(metadata, "abstract", element.text.strip())
 
         # now go through and retrieve the dcterms from the entry
         for element in entry.getchildren():
             if not isinstance(element.tag, basestring):
                 continue
                 
+            # we operate an additive policy with metadata.  Duplicate
+            # keys are allowed, but duplicate key/value pairs are not.
             if element.tag.startswith(self.ns.DC):
-                metadata[element.tag[len(self.ns.DC):]] = element.text.strip()
+                key = element.tag[len(self.ns.DC):]
+                val = element.text.strip()
+                self.a_insert(metadata, key, val)
 
         self.dao.store_metadata(collection, id, metadata)
+
+    def a_insert(self, d, key, value):
+        if d.has_key(key):
+            vs = d[key]
+            if value not in vs:
+                d[key].append(value)
+        else:
+            d[key] = [value]
 
 # WEB SERVER
 #######################################################################

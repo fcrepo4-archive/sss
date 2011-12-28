@@ -22,7 +22,7 @@ class CURL(object):
         self.http = "http://"
         self.on_behalf_of = "On-Behalf-Of"
         self.packaging = "Packaging"
-        self.suppress_metadata = "Suppress-Metadata"
+        self.metadata_relevant = "Metadata-Relevant"
         self.in_progress = "In-Progress"
         self.data = "--data-binary"
         self.content_type = "Content-Type"
@@ -108,7 +108,7 @@ class CURL(object):
         parts.append(self.auth_url(self.sd_uri))
         return " ".join(parts)
 
-    def new_deposit(self, obo=False, in_progress=False, multipart=False, atom_only=False, checksum=False, suppress_metadata=False):
+    def new_deposit(self, obo=False, in_progress=False, multipart=False, atom_only=False, checksum=False, metadata_relevant=False):
         parts = [self.cmd, self.post]
         parts.append(self.file_upload(multipart=multipart, atom_only=atom_only))
         parts.append(self.get_content_disp(multipart=multipart, atom_only=atom_only))
@@ -123,8 +123,8 @@ class CURL(object):
             parts.append(self.header(self.in_progress, self.true_value))
         if checksum and not multipart:
             parts.append(self.header(self.content_md5, self.checksum))
-        if suppress_metadata:
-            parts.append(self.header(self.suppress_metadata, self.true_value))
+        if metadata_relevant:
+            parts.append(self.header(self.metadata_relevant, self.true_value))
         parts.append(self.auth_url(self.col_uri))
         return " ".join(parts)
 
@@ -144,7 +144,7 @@ class CURL(object):
         parts.append(self.auth_url(self.cont_uri))
         return " ".join(parts)
 
-    def overwrite(self, obo=False, in_progress=False, checksum=False, suppress_metadata=False):
+    def overwrite(self, obo=False, in_progress=False, checksum=False, metadata_relevant=False):
         parts = [self.cmd, self.put]
         parts.append(self.file_upload(multipart=False))
         parts.append(self.get_content_disp(multipart=False))
@@ -156,8 +156,8 @@ class CURL(object):
             parts.append(self.header(self.in_progress, self.true_value))
         if checksum:
             parts.append(self.header(self.content_md5, self.checksum))
-        if suppress_metadata:
-            parts.append(self.header(self.suppress_metadata, self.true_value))
+        if metadata_relevant:
+            parts.append(self.header(self.metadata_relevant, self.true_value))
         parts.append(self.auth_url(self.em_uri))
         return " ".join(parts)
 
@@ -188,7 +188,7 @@ class CURL(object):
         parts.append(self.auth_url(self.edit_uri))
         return " ".join(parts)
 
-    def deposit_additional(self, obo=False, in_progress=False, multipart=False, checksum=False, suppress_metadata=False, atom_only=False):
+    def deposit_additional(self, obo=False, in_progress=False, multipart=False, checksum=False, metadata_relevant=False, atom_only=False):
         parts = [self.cmd, self.post]
         parts.append(self.file_upload(multipart=multipart, atom_only=atom_only))
         if not atom_only:
@@ -202,12 +202,16 @@ class CURL(object):
             parts.append(self.header(self.in_progress, self.true_value))
         if checksum and not multipart:
             parts.append(self.header(self.content_md5, self.checksum))
-        if suppress_metadata:
-            parts.append(self.header(self.suppress_metadata, self.true_value))
-        parts.append(self.auth_url(self.edit_uri))
+        if metadata_relevant:
+            parts.append(self.header(self.metadata_relevant, self.true_value))
+        if multipart or atom_only:
+            parts.append(self.auth_url(self.edit_uri))
+        else:
+            parts.append(self.auth_url(self.em_uri))
+        
         return " ".join(parts)
         
-    def replace(self, obo=False, in_progress=False, multipart=False, checksum=False, suppress_metadata=False, atom_only=False):
+    def replace(self, obo=False, in_progress=False, multipart=False, checksum=False, metadata_relevant=False, atom_only=False):
         parts = [self.cmd, self.put]
         parts.append(self.file_upload(multipart=multipart, atom_only=atom_only))
         if not atom_only:
@@ -221,8 +225,8 @@ class CURL(object):
             parts.append(self.header(self.in_progress, self.true_value))
         if checksum and not multipart:
             parts.append(self.header(self.content_md5, self.checksum))
-        if suppress_metadata:
-            parts.append(self.header(self.suppress_metadata, self.true_value))
+        if metadata_relevant:
+            parts.append(self.header(self.metadata_relevant, self.true_value))
         parts.append(self.auth_url(self.edit_uri))
         return " ".join(parts)
 
@@ -316,7 +320,7 @@ def curl_batch(sid, cid, oid):
 
     print CURL(col_id=cid, oid=oid).overwrite(in_progress=True)
 
-    print CURL(col_id=cid, oid=oid).overwrite(suppress_metadata=True)
+    print CURL(col_id=cid, oid=oid).overwrite(metadata_relevant=True)
 
     print CURL(col_id=cid, oid=oid, package_format="http://purl.org/net/sword/package/METSDSpaceSIP").overwrite()
 
@@ -360,7 +364,7 @@ def curl_batch(sid, cid, oid):
     
     print CURL(col_id=cid, oid=oid).replace(multipart=True)
 
-    print CURL(col_id=cid, oid=oid).replace(multipart=True, suppress_metadata=True)
+    print CURL(col_id=cid, oid=oid).replace(multipart=True, metadata_relevant=True)
 
     # DELETE THE OBJECT
     ###################
