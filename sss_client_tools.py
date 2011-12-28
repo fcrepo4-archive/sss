@@ -52,7 +52,7 @@ class CURL(object):
         self.entry_doc = "entry.xml" if entry_doc is None else entry_doc
         self.binary_content_type = "application/zip" if binary_content_type is None else binary_content_type
         self.mime_boundary = "===============0670350989==" if mime_boundary is None else mime_boundary
-        self.package_format = "http://purl.org/net/sword/package/default" if package_format is None else package_format
+        self.package_format = "http://purl.org/net/sword/package/SimpleZip" if package_format is None else package_format
         self.checksum = "2b25f82ba67284461d4a481d7a06dd28" if checksum is None else checksum
         self.sd_id = sd_id # can be None
         self.accept = accept # can be None
@@ -108,12 +108,13 @@ class CURL(object):
         parts.append(self.auth_url(self.sd_uri))
         return " ".join(parts)
 
-    def new_deposit(self, obo=False, in_progress=False, multipart=False, checksum=False, suppress_metadata=False):
+    def new_deposit(self, obo=False, in_progress=False, multipart=False, atom_only=False, checksum=False, suppress_metadata=False):
         parts = [self.cmd, self.post]
-        parts.append(self.file_upload(multipart=multipart))
-        parts.append(self.get_content_disp(multipart=multipart))
-        parts.append(self.get_content_type(multipart=multipart))
-        parts.append(self.header(self.packaging, self.package_format))
+        parts.append(self.file_upload(multipart=multipart, atom_only=atom_only))
+        parts.append(self.get_content_disp(multipart=multipart, atom_only=atom_only))
+        parts.append(self.get_content_type(multipart=multipart, atom_only=atom_only))
+        if not atom_only:
+            parts.append(self.header(self.packaging, self.package_format))
         if self.oid:
             parts.append(self.header(self.slug_header, self.oid))
         if obo:
@@ -261,6 +262,9 @@ def curl_batch(sid, cid, oid):
 
     # with a pre-prepared id
     print CURL(col_id=cid, oid=str(uuid.uuid4())).new_deposit()
+    
+    # Atom only
+    print CURL(col_id=cid, oid=str(uuid.uuid4())).new_deposit(atom_only=True)
 
     # LIST A COLLECTION
     ###################
@@ -273,7 +277,7 @@ def curl_batch(sid, cid, oid):
     print CURL(col_id=cid, oid=oid).media_resource()
 
     accept = "application/zip"
-    package = "http://purl.org/net/sword/package/default"
+    package = "http://purl.org/net/sword/package/SimpleZip"
     print CURL(col_id=cid, oid=oid, accept=accept, package_format=package).media_resource(packaging=True)
 
     accept = "application/zip"

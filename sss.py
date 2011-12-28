@@ -80,6 +80,8 @@ class Configuration(object):
                 "http://purl.org/net/sword/package/SimpleZip" : DefaultIngester,
                 "http://purl.org/net/sword/package/METSDSpaceSIP" : METSDSpaceIngester
             }
+            
+        self.entry_ingester = DefaultEntryIngester
 
         # supply this header in the Packaging header to generate a http://purl.org/net/sword/error/ErrorContent
         # sword error
@@ -267,7 +269,7 @@ class Collection(SwordHttpHandler):
         ss = SWORDServer()
         web.header("Content-Type", "text/xml")
         return ss.list_collection(collection)
-
+        
     def POST(self, collection):
         """
         POST either an Atom Multipart request, or a simple package into the specified collection
@@ -327,6 +329,13 @@ class Collection(SwordHttpHandler):
             web.header("Content-Type", "text/xml")
             web.ctx.status = result.error_code
             return result.error
+
+
+
+
+
+
+
 
 class MediaResourceContent(SwordHttpHandler):
     """
@@ -1306,6 +1315,7 @@ class DepositRequest(SWORDRequest):
         SWORDRequest.__init__(self)
 
         # content related
+        self.content_type = "application/octet-stream"
         self.content = None
         self.atom = None
         self.filename = "unnamed.file"
@@ -1444,6 +1454,8 @@ class SWORDSpec(object):
         return None
 
     def get_deposit(self, web, auth=None, atom_only=False):
+        # FIXME: this reads files into memory, and therefore does not scale
+        # FIXME: this does not deal with the Media Part headers on a multipart deposit
         """
         Take a web.py web object and extract from it the parameters and content required for a SWORD deposit.  This
         includes determining whether this is an Atom Multipart request or not, and extracting the atom/payload where
@@ -1465,6 +1477,7 @@ class SWORDSpec(object):
                 d.filename = self.extract_filename(dict[head])
             if head == "CONTENT_TYPE":
                 ct = dict[head]
+                d.content_type = ct
                 if ct.startswith("application/atom+xml"):
                     atom_only = True
 
@@ -1480,7 +1493,7 @@ class SWORDSpec(object):
             d.content = base64.decodestring(webin['payload'])
         else:
             # if this wasn't a multipart, then the data is in web.data().  This could be a binary deposit or
-            # an atom entry deposit - reply on the passed argument to determine which
+            # an atom entry deposit - reply on the passed/determined argument to determine which
             if atom_only:
                 d.atom = web.data()
             else:
@@ -1665,7 +1678,9 @@ class SWORDServer(object):
 
         # store the incoming atom document if necessary
         if deposit.atom is not None:
-            self.dao.store_atom(collection, id, deposit.atom)
+            entry_ingester = self.configuration.entry_ingester()
+            entry_ingester.ingest(collection, id, deposit.atom)
+            # self.dao.store_atom(collection, id, deposit.atom)
 
         # store the content file if one exists, and do some processing on it
         deposit_uri = None
@@ -2910,6 +2925,45 @@ class METSDSpaceIngester(IngestPackager):
         # we don't need to implement this, it is just for example.  it would unzip the file and import the metadata
         # in the zip file
         pass
+
+class DefaultEntryIngester(object):
+    def __init__(self):
+        self.dao = DAO()
+        self.ns = Namespaces()
+        
+    def ingest(self, collection, id, atom):
+        # store the atom
+        self.dao.store_atom(collection, id, atom)
+        
+        # now extract the metadata
+        metadata = {}
+        entry = etree.fromstring(atom)
+
+        # go through each element in the atom entry and just process the ones we care about
+        # explicitly retrieve the atom based metadata first, then we'll overwrite it later with
+        # the dcterms metadata where appropriate
+        for element in entry.getchildren():
+            if element.tag == self.ns.ATOM + "title":
+                metadata["title"] = element.text.strip()
+            if element.tag == self.ns.ATOM + "updated":
+                metadata["date"] = element.text.strip()
+            if element.tag == self.ns.ATOM + "author":
+                authors = ""
+                for names in element.getchildren():
+                    authors += names.text.strip() + " "
+                metadata["creator"] = authors
+            if element.tag == self.ns.ATOM + "summary":
+                metadata["abstract"] = element.text.strip()
+
+        # now go through and retrieve the dcterms from the entry
+        for element in entry.getchildren():
+            if not isinstance(element.tag, basestring):
+                continue
+                
+            if element.tag.startswith(self.ns.DC):
+                metadata[element.tag[len(self.ns.DC):]] = element.text.strip()
+
+        self.dao.store_metadata(collection, id, metadata)
 
 # WEB SERVER
 #######################################################################
