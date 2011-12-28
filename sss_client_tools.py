@@ -287,7 +287,10 @@ def curl_batch(sid, cid, oid):
     print CURL(col_id=cid, oid=oid, accept=accept).media_resource()
 
     accept = "application/vnd+msword"
-    print CURL(col_id=cid, oid=oid, accept_media=accept).media_resource()
+    print CURL(col_id=cid, oid=oid, accept=accept).media_resource()
+    
+    accept = "application/xml+atom;type=feed"
+    print CURL(col_id=cid, oid=oid, accept=accept).media_resource()
 
     # OVERWRITE THE EXISTING CONTENT
     ################################

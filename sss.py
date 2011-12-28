@@ -330,13 +330,6 @@ class Collection(SwordHttpHandler):
             web.ctx.status = result.error_code
             return result.error
 
-
-
-
-
-
-
-
 class MediaResourceContent(SwordHttpHandler):
     """
     Class to represent the content of the media resource.  This is the object which appears under atom:content@src, not
@@ -377,6 +370,7 @@ class MediaResourceContent(SwordHttpHandler):
             cn.default_subtype = "html"
 
             # The list of acceptable formats (in order of preference).
+            # FIXME: ultimately to replace this with the negotiator
             cn.acceptable = [
                     ContentType("application", "zip", None, "http://purl.org/net/sword/package/SimpleZip"),
                     ContentType("application", "zip"),
@@ -898,6 +892,11 @@ class Part(SwordHttpHandler):
     """
     def GET(self, id):
         # FIXME: this is useful but not hugely important; get to it later
+        pass
+        
+    def PUT(self, id):
+        # FIXME: this is not part of the spec, per se, but is part of the DepositMO
+        # extensions, so could be useful
         pass
 
 class Index():
@@ -2856,9 +2855,18 @@ class FeedDisseminator(DisseminationPackager):
         
         for file in files:
             entry = etree.SubElement(feed, self.ns.ATOM + "entry")
-            link = etree.SubElement(entry, self.ns.ATOM + "link")
-            link.set("rel", "edit")
-            link.set("href", self.um.part_uri(collection, id, file))
+            
+            em = etree.SubElement(entry, self.ns.ATOM + "link")
+            em.set("rel", "edit-media")
+            em.set("href", self.um.part_uri(collection, id, file))
+            
+            edit = etree.SubElement(entry, self.ns.ATOM + "link")
+            edit.set("rel", "edit")
+            edit.set("href", self.um.part_uri(collection, id, file) + ".atom")
+            
+            content = etree.SubElement(entry, self.ns.ATOM + "link")
+            content.set("type", "application/octet-stream") # FIXME: we're not storing content types, so we don't know
+            content.set("src", self.um.part_uri(collection, id, file))
         
         fpath = self.dao.get_store_path(collection, id, "mediaresource.feed.xml")
         f = open(fpath, "wb")
