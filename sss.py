@@ -2016,7 +2016,6 @@ class SWORDServer(object):
 
         # store the content file
         if deposit.content is not None:
-            print deposit.filename
             fn = self.dao.store_content(collection, id, deposit.content, deposit.filename)
 
             # now that we have stored the atom and the content, we can invoke a package ingester over the top to extract
@@ -2049,7 +2048,10 @@ class SWORDServer(object):
         # finally, assemble the deposit response and return
         dr = DepositResponse()
         dr.receipt = receipt
-        dr.location = self.um.edit_uri(collection, id)
+        # NOTE: in the spec, this is different for 6.7.2 and 6.7.3 (edit-iri and eiri respectively)
+        # in this case, we have always gone for the approach of 6.7.2, and contend that the
+        # spec is INCORRECT for 6.7.3
+        dr.location = self.um.edit_uri(collection, id) 
         dr.created = True
         return dr
 

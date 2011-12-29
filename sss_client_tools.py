@@ -346,6 +346,8 @@ def curl_batch(sid, cid, oid):
     print CURL(col_id=cid, oid=oid).deposit_additional(checksum=True)
 
     print CURL(col_id=cid, oid=oid, package_format="http://purl.org/net/sword/package/METSDSpaceSIP").deposit_additional()
+    
+    print CURL(col_id=cid, oid=oid).deposit_additional(multipart=True)
 
     # ADD MORE METADATA
     ###################
