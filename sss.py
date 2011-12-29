@@ -893,8 +893,8 @@ class WebUI(SwordHttpHandler):
     Class to provide a basic web interface to the store for convenience
     """
     def GET(self, id):
-        # FIXME: this is useful but not hugely important; get to it later
-        pass
+        ip = ItemPage()
+        return ip.get_item_page(id)
 
 class Part(SwordHttpHandler):
     """
@@ -915,7 +915,7 @@ class Part(SwordHttpHandler):
         
     def PUT(self, id):
         # FIXME: the spec says that we should either support this or return
-        # 405 Method Not allowed.
+        # 405 Method Not Allowed.
         # This would be useful for DepositMO compliance, so we should consider
         # implementing this when time permits
         web.ctx.status = "405 Method Not Allowed"
@@ -3087,6 +3087,58 @@ class DefaultEntryIngester(object):
                 d[key].append(value)
         else:
             d[key] = [value]
+
+# Basic Web Interface
+#######################################################################
+
+class ItemPage(object):
+    def __init__(self):
+        self.dao = DAO()
+        self.um = URIManager()
+    
+    def get_item_page(self, oid):
+        collection, id = self.um.interpret_oid(oid)
+        statement = self.dao.load_statement(collection, id)
+        metadata = self.dao.get_metadata(collection, id)
+        print metadata
+        
+        state_frag = self._get_state_frag(statement)
+        md_frag = self._layout_metadata(metadata)
+        file_frag = self._layout_files(statement)
+        
+        frag = "<h1>Item: " + id + "</h1>"
+        frag += "<strong>State</strong>: " + state_frag
+        frag += self._layout_sections(md_frag, file_frag)
+        return self._wrap_html("Item: " + id, frag)
+    
+    def _layout_metadata(self, metadata):
+        frag = "<h2>Metadata</h2>"
+        for key, vals in metadata.iteritems():
+            frag += "<strong>" + key + "</strong>: " + ", ".join(vals) + "<br/>"
+        if len(metadata) == 0:
+            frag += "No metadata associated with this item"
+        return frag
+        
+    def _layout_files(self, statement):
+        frag = "<h2>Files</h2>"
+        frag += "<table border=\"1\"><tr><th>URI</th><th>deposited on</th><th>format</th><th>deposited by</th><th>on behalf of</th></tr>"
+        for uri, deposit_time, format, by, obo in statement.original_deposits:
+            frag += "<tr><td><a href=\"" + uri + "\">" + uri + "</a></td><td>" + str(deposit_time) + "</td><td>" + format
+            frag += "</td><td>" + by + "</td><td>" + str(obo) + "</td></tr>"
+        frag += "</table>"
+        return frag
+    
+    def _get_state_frag(self, statement):
+        if statement.in_progress:
+            return statement.in_progress_uri
+        else:
+            return statement.archived_uri
+    
+    def _layout_sections(self, metadata, files):
+        return "<table border=\"0\"><tr><td valign=\"top\">" + metadata + "</td><td valign=\"top\">" + files + "</td></tr></table>"
+    
+    def _wrap_html(self, title, frag):
+        return "<html><head><title>" + title + "</title></head><body>" + frag + "</body></html>"
 
 # WEB SERVER
 #######################################################################
