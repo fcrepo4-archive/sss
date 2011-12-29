@@ -898,14 +898,26 @@ class Part(SwordHttpHandler):
     """
     Class to provide access to the component parts of the object on the server
     """
-    def GET(self, id):
-        # FIXME: this is useful but not hugely important; get to it later
-        pass
+    def GET(self, path):
+        ss = SWORDServer()
+        
+        # if we did, we can get hold of the media resource
+        fh = ss.get_part(path)
+        
+        if fh is None:
+            return web.notfound()
+
+        web.header("Content-Type", "application/octet-stream") # we're not keeping track of content types
+        web.ctx.status = "200 OK"
+        return fh.read()
         
     def PUT(self, id):
-        # FIXME: this is not part of the spec, per se, but is part of the DepositMO
-        # extensions, so could be useful
-        pass
+        # FIXME: the spec says that we should either support this or return
+        # 405 Method Not allowed.
+        # This would be useful for DepositMO compliance, so we should consider
+        # implementing this when time permits
+        web.ctx.status = "405 Method Not Allowed"
+        return
 
 class Index():
     """
@@ -1734,6 +1746,18 @@ class SWORDServer(object):
         dr.created = True
         
         return dr
+
+    def get_part(self, path):
+        """
+        Get a file handle to the part identified by the supplied path
+        - path:     The URI part which is the path to the file
+        """
+        collection, id, fn = self.um.interpret_path(path)
+        if self.dao.file_exists(collection, id, fn):
+            route = self.dao.get_store_path(collection, id, fn)
+            return open(route, "r")
+        else:
+            return None
 
     def get_media_resource(self, oid, content_type):
         """
@@ -2609,6 +2633,14 @@ class URIManager(object):
         """
         collection, id = oid.split("/", 1)
         return collection, id
+        
+    def interpret_path(self, path):
+        """
+        Take a file path from a URL and interpret the collection, id and filename terms.
+        Returns a tuple of (collection, id, filename)
+        """
+        collection, id, fn = path.split("/", 2)
+        return collection, id, fn
 
 class DAO(object):
     """
