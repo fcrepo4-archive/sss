@@ -37,7 +37,7 @@ class Configuration(object):
         # to use for On-Behalf-Of requests.  Set authenticate=False if you want to test the server without caring
         # about authentication, set mediation=False if you want to test the server's errors on invalid attempts at
         # mediation
-        self.authenticate = False
+        self.authenticate = True
         self.user = "sword"
         self.password = "sword"
         
@@ -712,10 +712,12 @@ class Container(SwordHttpHandler):
             return result.error
 
     # NOTE: this POST action on the Container is represented in the specification
-    # by a POST to the SE-IRI (The SWORD Edit IRI), sections 6.7.2 and 6.7.3
+    # by a POST to the SE-IRI (The SWORD Edit IRI), sections 6.7.2 and 6.7.3 and
+    # also to support completing unfinished deposits as per section 9.3
     def POST(self, id):
         """
-        POST some new content into the container identified by the supplied id
+        POST some new content into the container identified by the supplied id,
+        or complete an existing deposit (using the In-Progress header)
         Args:
         - id:    The ID of the container as contained in the URL
         Returns a Deposit Receipt
@@ -1489,6 +1491,7 @@ class SWORDSpec(object):
         # get the headers that have been provided.  Any headers which have not been provided have default values
         # supplied in the DepositRequest object's constructor
         print dict
+        empty_request = False
         for head in dict.keys():
             if head in self.sword_headers:
                 d.set_by_header(head, dict[head])
@@ -1499,6 +1502,9 @@ class SWORDSpec(object):
                 d.content_type = ct
                 if ct.startswith("application/atom+xml"):
                     atom_only = True
+            if head == "CONTENT_LENGTH":
+                if dict[head] == "0":
+                    empty_request = True
 
         # FIXME: do we need to read web.data() in an parse it with the email.mime library to do this properly?
         # print web.data()
@@ -1510,8 +1516,8 @@ class SWORDSpec(object):
             # FIXME: we know that due to the way that the multipart works, this is a base64 encoded string, which
             # does not equal a ZIP file.  Have to come back to this and figure out what is best to do
             d.content = base64.decodestring(webin['payload'])
-        else:
-            # if this wasn't a multipart, then the data is in web.data().  This could be a binary deposit or
+        elif not empty_request:
+            # if this wasn't a multipart, and isn't an empty request, then the data is in web.data().  This could be a binary deposit or
             # an atom entry deposit - reply on the passed/determined argument to determine which
             if atom_only:
                 d.atom = web.data()
@@ -2026,7 +2032,11 @@ class SWORDServer(object):
 
         # load the statement
         s = self.dao.load_statement(collection, id)
-
+        
+        # do the in-progress first, as some deposits will be empty, and will
+        # just be telling us that the client has finished working on this item
+        s.in_progress = deposit.in_progress
+        
         # now just store the atom file and the content (this may overwrite an existing atom document - this is
         # intentional, although real servers would augment the existing metadata rather than overwrite)
         if deposit.atom is not None:
@@ -2057,10 +2067,9 @@ class SWORDServer(object):
             by = deposit.auth.by if deposit.auth is not None else None
             obo = deposit.auth.obo if deposit.auth is not None else None
             s.original_deposit(deposit_uri, datetime.now(), deposit.packaging, by, obo)
-            s.in_progress = deposit.in_progress
-
-            # store the statement by itself
-            self.dao.store_statement(collection, id, s)
+            
+        # store the statement by itself
+        self.dao.store_statement(collection, id, s)
 
         # create the deposit receipt (which involves getting hold of the item's metadata first if it exists
         metadata = self.dao.get_metadata(collection, id)
@@ -2074,7 +2083,8 @@ class SWORDServer(object):
         dr.receipt = receipt
         # NOTE: in the spec, this is different for 6.7.2 and 6.7.3 (edit-iri and eiri respectively)
         # in this case, we have always gone for the approach of 6.7.2, and contend that the
-        # spec is INCORRECT for 6.7.3
+        # spec is INCORRECT for 6.7.3 (also, section 9.3, which comes into play here
+        # also says use the edit-uri)
         dr.location = self.um.edit_uri(collection, id) 
         dr.created = True
         return dr
