@@ -1048,8 +1048,8 @@ class ContentNegotiator(object):
         return None
 
     def get_packaging(self, dict):
-        if dict.has_key('HTTP_PACKAGING'):
-            return dict['HTTP_PACKAGING']
+        if dict.has_key('HTTP_ACCEPT_PACKAGING'):
+            return dict['HTTP_ACCEPT_PACKAGING']
         return None
 
     def analyse_accept(self, accept, packaging=None):
@@ -1416,7 +1416,7 @@ class SWORDSpec(object):
         # aren't the real HTTP header names - see the spec)
         self.sword_headers = [
             "HTTP_ON_BEHALF_OF", "HTTP_PACKAGING", "HTTP_IN_PROGRESS", "HTTP_METADATA_RELEVANT",
-            "HTTP_CONTENT_MD5", "HTTP_SLUG"
+            "HTTP_CONTENT_MD5", "HTTP_SLUG", "HTTP_ACCEPT_PACKAGING"
         ]
 
         self.error_content_uri = "http://purl.org/net/sword/error/ErrorContent"
