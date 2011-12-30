@@ -59,7 +59,8 @@ class Configuration(object):
 
         # maximum upload size to be allowed, in bytes (this default is 16Mb)
         self.max_upload_size = 16777216
-
+        #self.max_upload_size = 0 # used to generate errors
+        
         # list of package formats that SSS can provide when retrieving the Media Resource
         self.sword_disseminate_package = [
             "http://purl.org/net/sword/package/SimpleZip"
@@ -88,7 +89,7 @@ class Configuration(object):
         self.error_content_package = "http://purl.org/net/sword/package/error"
 
         # we can turn off updates and deletes in order to examine the behaviour of Method Not Allowed errors
-        self.allow_update = True
+        self.allow_update = False
         self.allow_delete = True
 
         # we can turn off deposit receipts, which is allowed by the specification
@@ -230,7 +231,7 @@ class ServiceDocument(SwordHttpHandler):
                 ss = SWORDServer()
                 error = ss.sword_error(spec.error_target_owner_unknown_uri, auth.obo)
                 web.header("Content-Type", "text/xml")
-                web.ctx.status = "401 Unauthorized"
+                web.ctx.status = "403 Forbidden"
                 return error
             return
 
@@ -261,7 +262,7 @@ class Collection(SwordHttpHandler):
                 ss = SWORDServer()
                 error = ss.sword_error(spec.error_target_owner_unknown_uri, auth.obo)
                 web.header("Content-Type", "text/xml")
-                web.ctx.status = "401 Unauthorized"
+                web.ctx.status = "403 Forbidden"
                 return error
             return
 
@@ -287,7 +288,7 @@ class Collection(SwordHttpHandler):
                 ss = SWORDServer()
                 error = ss.sword_error(spec.error_target_owner_unknown_uri, auth.obo)
                 web.header("Content-Type", "text/xml")
-                web.ctx.status = "401 Unauthorized"
+                web.ctx.status = "403 Forbidden"
                 return error
             return
 
@@ -305,6 +306,11 @@ class Collection(SwordHttpHandler):
 
         # take the HTTP request and extract a Deposit object from it
         deposit = spec.get_deposit(web, auth)
+        if deposit.too_large:
+            error = ss.sword_error(spec.error_max_upload_size_exceeded, "Your deposit exceeds the maximum upload size limit")
+            web.header("Content-Type", "text/xml")
+            web.ctx.status = "413 Request Entity Too Large"
+            return error
         result = ss.deposit_new(collection, deposit)
 
         if result is None:
@@ -419,7 +425,7 @@ class MediaResource(MediaResourceContent):
         if not cfg.allow_update:
             spec = SWORDSpec()
             ss = SWORDServer()
-            error = ss.sword_error(spec.error_method_not_allowed_uri, "You can't do this right now, sorry")
+            error = ss.sword_error(spec.error_method_not_allowed_uri, "Update operations not currently permitted")
             web.header("Content-Type", "text/xml")
             web.ctx.status = "405 Method Not Allowed"
             return error
@@ -432,7 +438,7 @@ class MediaResource(MediaResourceContent):
                 ss = SWORDServer()
                 error = ss.sword_error(spec.error_target_owner_unknown_uri, auth.obo)
                 web.header("Content-Type", "text/xml")
-                web.ctx.status = "401 Unauthorized"
+                web.ctx.status = "403 Forbidden"
                 return error
             return
 
@@ -448,14 +454,19 @@ class MediaResource(MediaResourceContent):
             web.ctx.status = "400 Bad Request"
             return error
 
-        # get a deposit object.  The PUT operation only supports a single binary deposit, not an Atom Multipart one
-        # so if the deposit object has an atom part we should return an error
-        deposit = spec.get_deposit(web, auth)
-
         # next, before processing the request, let's check that the id is valid, and if not 404 the client
         if not ss.exists(id):
             return web.notfound()
 
+        # get a deposit object.  The PUT operation only supports a single binary deposit, not an Atom Multipart one
+        # so if the deposit object has an atom part we should return an error
+        deposit = spec.get_deposit(web, auth)
+        if deposit.too_large:
+            error = ss.sword_error(spec.error_max_upload_size_exceeded, "Your deposit exceeds the maximum upload size limit")
+            web.header("Content-Type", "text/xml")
+            web.ctx.status = "413 Request Entity Too Large"
+            return error
+        
         # now replace the content of the container
         result = ss.replace(id, deposit)
 
@@ -483,7 +494,7 @@ class MediaResource(MediaResourceContent):
         if not cfg.allow_delete:
             spec = SWORDSpec()
             ss = SWORDServer()
-            error = ss.sword_error(spec.error_method_not_allowed_uri, "You can't do this right now, sorry")
+            error = ss.sword_error(spec.error_method_not_allowed_uri, "Delete operations not currently permitted")
             web.header("Content-Type", "text/xml")
             web.ctx.status = "405 Method Not Allowed"
             return error
@@ -496,7 +507,7 @@ class MediaResource(MediaResourceContent):
                 ss = SWORDServer()
                 error = ss.sword_error(spec.error_target_owner_unknown_uri, auth.obo)
                 web.header("Content-Type", "text/xml")
-                web.ctx.status = "401 Unauthorized"
+                web.ctx.status = "403 Forbidden"
                 return error
             return
 
@@ -538,6 +549,16 @@ class MediaResource(MediaResourceContent):
         - id:   The ID of the media resource as specified in the requested URL
         Returns a Deposit Receipt
         """
+        # find out if update is allowed
+        cfg = global_configuration
+        if not cfg.allow_update:
+            spec = SWORDSpec()
+            ss = SWORDServer()
+            error = ss.sword_error(spec.error_method_not_allowed_uri, "Update operations not currently permitted")
+            web.header("Content-Type", "text/xml")
+            web.ctx.status = "405 Method Not Allowed"
+            return error
+            
         # authenticate
         auth = self.authenticate(web)
         if not auth.success():
@@ -546,7 +567,7 @@ class MediaResource(MediaResourceContent):
                 ss = SWORDServer()
                 error = ss.sword_error(spec.error_target_owner_unknown_uri, auth.obo)
                 web.header("Content-Type", "text/xml")
-                web.ctx.status = "401 Unauthorized"
+                web.ctx.status = "403 Forbidden"
                 return error
             return
 
@@ -562,13 +583,18 @@ class MediaResource(MediaResourceContent):
             web.ctx.status = "400 Bad Request"
             return error
 
-        # take the HTTP request and extract a Deposit object from it
-        deposit = spec.get_deposit(web, auth)
-        
         # next, before processing the request, let's check that the id is valid, and if not 404 the client
         if not ss.exists(id):
             return web.notfound()
-        
+
+        # take the HTTP request and extract a Deposit object from it
+        deposit = spec.get_deposit(web, auth)
+        if deposit.too_large:
+            error = ss.sword_error(spec.error_max_upload_size_exceeded, "Your deposit exceeds the maximum upload size limit")
+            web.header("Content-Type", "text/xml")
+            web.ctx.status = "413 Request Entity Too Large"
+            return error
+                
         result = ss.add_content(id, deposit)
 
         if result is None:
@@ -612,7 +638,7 @@ class Container(SwordHttpHandler):
                 ss = SWORDServer()
                 error = ss.sword_error(spec.error_target_owner_unknown_uri, auth.obo)
                 web.header("Content-Type", "text/xml")
-                web.ctx.status = "401 Unauthorized"
+                web.ctx.status = "403 Forbidden"
                 return error
             return
 
@@ -658,7 +684,15 @@ class Container(SwordHttpHandler):
         PUT a new Entry over the existing entry, or a multipart request over
         both the existing metadata and the existing content
         """
+        # find out if update is allowed
         cfg = global_configuration
+        if not cfg.allow_update:
+            spec = SWORDSpec()
+            ss = SWORDServer()
+            error = ss.sword_error(spec.error_method_not_allowed_uri, "Update operations not currently permitted")
+            web.header("Content-Type", "text/xml")
+            web.ctx.status = "405 Method Not Allowed"
+            return error
         
         # authenticate
         auth = self.authenticate(web)
@@ -668,7 +702,7 @@ class Container(SwordHttpHandler):
                 ss = SWORDServer()
                 error = ss.sword_error(spec.error_target_owner_unknown_uri, auth.obo)
                 web.header("Content-Type", "text/xml")
-                web.ctx.status = "401 Unauthorized"
+                web.ctx.status = "403 Forbidden"
                 return error
             return
 
@@ -686,6 +720,11 @@ class Container(SwordHttpHandler):
 
         # take the HTTP request and extract a Deposit object from it
         deposit = spec.get_deposit(web, auth)
+        if deposit.too_large:
+            error = ss.sword_error(spec.error_max_upload_size_exceeded, "Your deposit exceeds the maximum upload size limit")
+            web.header("Content-Type", "text/xml")
+            web.ctx.status = "413 Request Entity Too Large"
+            return error
         result = ss.replace(id, deposit)
 
         # FIXME: this is no longer relevant
@@ -727,7 +766,7 @@ class Container(SwordHttpHandler):
         if not cfg.allow_update:
             spec = SWORDSpec()
             ss = SWORDServer()
-            error = ss.sword_error(spec.error_method_not_allowed_uri, "You can't do this right now, sorry")
+            error = ss.sword_error(spec.error_method_not_allowed_uri, "Update operations not currently permitted")
             web.header("Content-Type", "text/xml")
             web.ctx.status = "405 Method Not Allowed"
             return error
@@ -740,7 +779,7 @@ class Container(SwordHttpHandler):
                 ss = SWORDServer()
                 error = ss.sword_error(spec.error_target_owner_unknown_uri, auth.obo)
                 web.header("Content-Type", "text/xml")
-                web.ctx.status = "401 Unauthorized"
+                web.ctx.status = "403 Forbidden"
                 return error
             return
 
@@ -758,6 +797,11 @@ class Container(SwordHttpHandler):
 
         # take the HTTP request and extract a Deposit object from it
         deposit = spec.get_deposit(web, auth)
+        if deposit.too_large:
+            error = ss.sword_error(spec.error_max_upload_size_exceeded, "Your deposit exceeds the maximum upload size limit")
+            web.header("Content-Type", "text/xml")
+            web.ctx.status = "413 Request Entity Too Large"
+            return error
         result = ss.deposit_existing(id, deposit)
 
         if result is None:
@@ -790,7 +834,7 @@ class Container(SwordHttpHandler):
         if not cfg.allow_delete:
             spec = SWORDSpec()
             ss = SWORDServer()
-            error = ss.sword_error(spec.error_method_not_allowed_uri, "You can't do this right now, sorry")
+            error = ss.sword_error(spec.error_method_not_allowed_uri, "Delete operations not currently permitted")
             web.header("Content-Type", "text/xml")
             web.ctx.status = "405 Method Not Allowed"
             return error
@@ -803,7 +847,7 @@ class Container(SwordHttpHandler):
                 ss = SWORDServer()
                 error = ss.sword_error(spec.error_target_owner_unknown_uri, auth.obo)
                 web.header("Content-Type", "text/xml")
-                web.ctx.status = "401 Unauthorized"
+                web.ctx.status = "403 Forbidden"
                 return error
             return
 
@@ -847,7 +891,7 @@ class StatementHandler(SwordHttpHandler):
                 ss = SWORDServer()
                 error = ss.sword_error(spec.error_target_owner_unknown_uri, auth.obo)
                 web.header("Content-Type", "text/xml")
-                web.ctx.status = "401 Unauthorized"
+                web.ctx.status = "403 Forbidden"
                 return error
             return
 
@@ -1340,6 +1384,7 @@ class DepositRequest(SWORDRequest):
         self.content = None
         self.atom = None
         self.filename = "unnamed.file"
+        self.too_large = False
 
 class DepositResponse(object):
     """
@@ -1427,6 +1472,7 @@ class SWORDSpec(object):
         self.error_target_owner_unknown_uri = "http://purl.org/net/sword/error/TargetOwnerUnknown"
         self.error_mediation_not_allowed_uri = "http://purl.org/net/sword/error/MediationNotAllowed"
         self.error_method_not_allowed_uri = "http://purl.org/net/sword/error/MethodNotAllowed"
+        self.error_max_upload_size_exceeded = "http://purl.org/net/sword/error/MaxUploadSizeExceeded"
 
     def validate_deposit_request(self, web, allow_multipart=True):
         dict = web.ctx.environ
@@ -1505,6 +1551,10 @@ class SWORDSpec(object):
             if head == "CONTENT_LENGTH":
                 if dict[head] == "0":
                     empty_request = True
+                cl = int(dict[head]) # content length as an integer
+                if cl > global_configuration.max_upload_size:
+                    d.too_large = True
+                    return d
 
         # FIXME: do we need to read web.data() in an parse it with the email.mime library to do this properly?
         # print web.data()
@@ -2363,6 +2413,10 @@ class SWORDServer(object):
         entry = etree.Element(self.ns.SWORD + "error", nsmap=self.emap)
         entry.set("href", uri)
 
+        author = etree.SubElement(entry, self.ns.ATOM + "author")
+        name = etree.SubElement(author, self.ns.ATOM + "name")
+        name.text = "SSS"
+
         title = etree.SubElement(entry, self.ns.ATOM + "title")
         title.text = "ERROR: " + uri
 
@@ -2386,6 +2440,10 @@ class SWORDServer(object):
         # treatment
         treatment = etree.SubElement(entry, self.ns.SWORD + "treatment")
         treatment.text = "processing failed"
+        
+        # verbose description
+        vb = etree.SubElement(entry, self.ns.SWORD + "verboseDescription")
+        vb.text = "Verbose Description Here"
 
         return etree.tostring(entry, pretty_print=True)
 
@@ -2418,9 +2476,9 @@ class SWORDServer(object):
         if deposit.packaging == self.configuration.error_content_package:
             spec = SWORDSpec()
             dr = DepositResponse()
-            error_doc = self.sword_error(spec.error_content_uri)
+            error_doc = self.sword_error(spec.error_content_uri, "Unsupported Packaging format specified")
             dr.error = error_doc
-            dr.error_code = "400 Bad Request"
+            dr.error_code = "415 Unsupported Media Type"
             return dr
 
         # have we been given an incompatible MD5?
@@ -2431,7 +2489,7 @@ class SWORDServer(object):
             if digest != deposit.content_md5:
                 spec = SWORDSpec()
                 dr = DepositResponse()
-                error_doc = self.sword_error(spec.error_checksum_mismatch_uri)
+                error_doc = self.sword_error(spec.error_checksum_mismatch_uri, "Content-MD5 header does not match file checksum")
                 dr.error = error_doc
                 dr.error_code = "412 Precondition Failed"
                 return dr
