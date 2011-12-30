@@ -533,9 +533,9 @@ class MediaResource(MediaResourceContent):
     
     def POST(self, id):
         """
-        POST a simple package into the specified collection
+        POST a simple package into the specified media resource
         Args:
-        - collection:   The ID of the collection as specified in the requested URL
+        - id:   The ID of the media resource as specified in the requested URL
         Returns a Deposit Receipt
         """
         # authenticate
@@ -1738,6 +1738,7 @@ class SWORDServer(object):
         if deposit_uri is not None:
             s.original_deposit(deposit_uri, datetime.now(), deposit.packaging, by, obo)
         s.in_progress = deposit.in_progress
+        s.aggregates = derived_resource_uris
 
         # store the statement by itself
         self.dao.store_statement(collection, id, s)
@@ -1862,6 +1863,7 @@ class SWORDServer(object):
         obo = deposit.auth.obo if deposit.auth is not None else None
         s.original_deposit(deposit_uri, datetime.now(), deposit.packaging, by, obo)
         s.in_progress = deposit.in_progress
+        s.aggregates = derived_resource_uris
 
         # store the statement by itself
         self.dao.store_statement(collection, id, s)
@@ -1953,6 +1955,10 @@ class SWORDServer(object):
         if not self.exists(oid):
             return None
 
+        # load the statement
+        s = self.dao.load_statement(collection, id)
+        s.in_progress = deposit.in_progress
+        
         # store the content file if one exists, and do some processing on it
         deposit_uri = None
         if deposit.content is not None:
@@ -1966,22 +1972,32 @@ class SWORDServer(object):
             
             # An identifier which will resolve to the package just deposited
             deposit_uri = self.um.part_uri(collection, id, fn)
+            
+            by = deposit.auth.by if deposit.auth is not None else None
+            obo = deposit.auth.obo if deposit.auth is not None else None
+            s.original_deposit(deposit_uri, datetime.now(), deposit.packaging, by, obo)
+            
+            # since there is no unpacking, there are no derived resources, so 
+            # no need to add any further aggregations to the statement
 
+        # NOTE: all this was wrong - it was creating a new statement from
+        # scratch, when it should have been adding to an existing one ...
+        #
         # the aggregation uri
-        agg_uri = self.um.agg_uri(collection, id)
+        # agg_uri = self.um.agg_uri(collection, id)
 
         # the Edit-URI
-        edit_uri = self.um.edit_uri(collection, id)
+        # edit_uri = self.um.edit_uri(collection, id)
 
         # create the initial statement
-        s = Statement()
-        s.aggregation_uri = agg_uri
-        s.rem_uri = edit_uri
-        by = deposit.auth.by if deposit.auth is not None else None
-        obo = deposit.auth.obo if deposit.auth is not None else None
-        if deposit_uri is not None:
-            s.original_deposit(deposit_uri, datetime.now(), deposit.packaging, by, obo)
-        s.in_progress = deposit.in_progress
+        #s = Statement()
+        #s.aggregation_uri = agg_uri
+        #s.rem_uri = edit_uri
+        #by = deposit.auth.by if deposit.auth is not None else None
+        #obo = deposit.auth.obo if deposit.auth is not None else None
+        #if deposit_uri is not None:
+        #    s.original_deposit(deposit_uri, datetime.now(), deposit.packaging, by, obo)
+        #s.in_progress = deposit.in_progress
 
         # store the statement by itself
         self.dao.store_statement(collection, id, s)
@@ -2089,7 +2105,12 @@ class SWORDServer(object):
             by = deposit.auth.by if deposit.auth is not None else None
             obo = deposit.auth.obo if deposit.auth is not None else None
             s.original_deposit(deposit_uri, datetime.now(), deposit.packaging, by, obo)
-            
+        
+        # add the new list of aggregations to the existing list, allowing the
+        # statement to ensure that the list is normalised (only consisting of
+        # unique uris)
+        s.add_normalised_aggregations(derived_resource_uris)
+        
         # store the statement by itself
         self.dao.store_statement(collection, id, s)
 
@@ -2438,10 +2459,12 @@ class Statement(object):
         - rem_uri           -   The URI of the Resource Map in ORE terms
         - original_deposits -   The list of original packages uploaded to the server (set with original_deposit())
         - in_progress       -   Is the submission in progress (boolean)
+        - aggregates        -   the non-original deposit files associated with the item
         """
         self.aggregation_uri = None
         self.rem_uri = None
         self.original_deposits = []
+        self.aggregates = []
         self.in_progress = False
 
         # URIs to use for the two supported states in SSS
@@ -2473,13 +2496,20 @@ class Statement(object):
         """
         self.original_deposits.append((uri, deposit_time, packaging_format, by, obo))
 
+    def add_normalised_aggregations(self, aggs):
+        for agg in aggs:
+            if agg not in self.aggregates:
+                self.aggregates.append(agg)
+
     def load(self, filepath):
         """
         Populate this statement object from the XML serialised statement to be found at the specified filepath
         """
         f = open(filepath, "r")
         rdf = etree.fromstring(f.read())
-
+        
+        aggs = []
+        ods = []
         for desc in rdf.getchildren():
             packaging = None
             depositedOn = None
@@ -2487,10 +2517,13 @@ class Statement(object):
             deposit_obo = None
             about = desc.get(self.ns.RDF + "about")
             for element in desc.getchildren():
+                if element.tag == self.ns.ORE + "aggregates":
+                    resource = element.get(self.ns.RDF + "resource")
+                    aggs.append(resource)
                 if element.tag == self.ns.ORE + "describes":
                     resource = element.get(self.ns.RDF + "resource")
-                    self.aggregation_uri = about
-                    self.rem_uri = resource
+                    self.aggregation_uri = resource
+                    self.rem_uri = about
                 if element.tag == self.ns.SWORD + "state":
                     state = element.get(self.ns.RDF + "resource")
                     self.in_progress = state == "http://purl.org/net/sword/state/in-progress"
@@ -2504,7 +2537,14 @@ class Statement(object):
                 if element.tag == self.ns.SWORD + "depositedOnBehalfOf":
                     deposit_obo = element.text
             if packaging is not None:
+                ods.append(about)
                 self.original_deposit(about, depositedOn, packaging, deposit_by, deposit_obo)
+        
+        # sort out the ordinary aggregations from the original deposits
+        self.aggregates = []
+        for agg in aggs:
+            if agg not in ods:
+                self.aggregates.append(agg)
 
     def serialise(self):
         """
@@ -2557,6 +2597,13 @@ class Statement(object):
                 deposit_obo = etree.SubElement(entry, self.ns.SWORD + "depositedOnBehalfOf")
                 deposit_obo.text = obo
 
+        # finally do an entry for all the ordinary aggregated resources
+        for uri in self.aggregates:
+            entry = etree.SubElement(feed, self.ns.ATOM + "entry")
+            content = etree.SubElement(entry, self.ns.ATOM + "content")
+            content.set("type", "application/octet-stream")
+            content.set("src", uri)
+
         return etree.tostring(feed, pretty_print=True)
 
     def get_rdf_xml(self):
@@ -2580,6 +2627,11 @@ class Statement(object):
         description.set(self.ns.RDF + "about", self.aggregation_uri)
         idb = etree.SubElement(description, self.ns.ORE + "isDescribedBy")
         idb.set(self.ns.RDF + "resource", self.rem_uri)
+
+        # Create ore:aggreages for all ordinary aggregated files
+        for uri in self.aggregates:
+            aggregates = etree.SubElement(description, self.ns.ORE + "aggregates")
+            aggregates.set(self.ns.RDF + "resource", uri)
 
         # Create ore:aggregates and sword:originalDeposit relations for the original deposits
         for (uri, datestamp, format, by, obo) in self.original_deposits:
