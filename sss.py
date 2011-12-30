@@ -1708,16 +1708,20 @@ class SWORDServer(object):
 
         # store the content file if one exists, and do some processing on it
         deposit_uri = None
+        derived_resource_uris = []
         if deposit.content is not None:
             fn = self.dao.store_content(collection, id, deposit.content, deposit.filename)
 
             # now that we have stored the atom and the content, we can invoke a package ingester over the top to extract
             # all the metadata and any files we want
             packager = self.configuration.package_ingesters[deposit.packaging]()
-            packager.ingest(collection, id, fn, deposit.metadata_relevant)
+            derived_resources = packager.ingest(collection, id, fn, deposit.metadata_relevant)
 
             # An identifier which will resolve to the package just deposited
             deposit_uri = self.um.part_uri(collection, id, fn)
+            
+            # a list of identifiers which will resolve to the derived resources
+            derived_resource_uris = self.get_derived_resource_uris(collection, id, derived_resources)
 
         # the aggregation uri
         agg_uri = self.um.agg_uri(collection, id)
@@ -1738,13 +1742,16 @@ class SWORDServer(object):
         # store the statement by itself
         self.dao.store_statement(collection, id, s)
 
-        # create the deposit receipt (which involves getting hold of the item's metadata first if it exists
+        # create the basic deposit receipt (which involves getting hold of the item's metadata first if it exists)
         metadata = self.dao.get_metadata(collection, id)
         receipt = self.deposit_receipt(collection, id, deposit, s, metadata)
 
-        # store the deposit receipt also
+        # store the deposit receipt
         self.dao.store_deposit_receipt(collection, id, receipt)
 
+        # now augment the receipt with the details of this particular deposit
+        receipt = self.augmented_receipt(receipt, deposit_uri, derived_resource_uris)
+        
         # finally, assemble the deposit response and return
         dr = DepositResponse()
         dr.receipt = receipt
@@ -1833,7 +1840,10 @@ class SWORDServer(object):
         # all the metadata and any files we want.  Notice that we pass in the metadata_relevant flag, so the
         # packager won't overwrite the existing metadata if it isn't supposed to
         packager = self.configuration.package_ingesters[deposit.packaging]()
-        packager.ingest(collection, id, fn, deposit.metadata_relevant)
+        derived_resources = packager.ingest(collection, id, fn, deposit.metadata_relevant)
+        
+        # a list of identifiers which will resolve to the derived resources
+        derived_resource_uris = self.get_derived_resource_uris(collection, id, derived_resources)
 
         # An identifier which will resolve to the package just deposited
         deposit_uri = self.um.part_uri(collection, id, fn)
@@ -1862,6 +1872,9 @@ class SWORDServer(object):
 
         # store the deposit receipt also
         self.dao.store_deposit_receipt(collection, id, receipt)
+        
+        # now augment the receipt with the details of this particular deposit
+        receipt = self.augmented_receipt(receipt, deposit_uri, derived_resource_uris)
 
         # finally, assemble the deposit response and return
         dr = DepositResponse()
@@ -1979,6 +1992,10 @@ class SWORDServer(object):
 
         # store the deposit receipt also
         self.dao.store_deposit_receipt(collection, id, receipt)
+        
+        # now augment the receipt with the details of this particular deposit
+        if deposit_uri is not None:
+            receipt = self.augmented_receipt(receipt, deposit_uri)
 
         # finally, assemble the deposit response and return
         dr = DepositResponse()
@@ -2049,6 +2066,8 @@ class SWORDServer(object):
             entry_ingester.ingest(collection, id, deposit.atom, True)
 
         # store the content file
+        deposit_uri = None
+        derived_resource_uris = []
         if deposit.content is not None:
             fn = self.dao.store_content(collection, id, deposit.content, deposit.filename)
 
@@ -2058,7 +2077,10 @@ class SWORDServer(object):
             pclass = self.configuration.package_ingesters.get(deposit.packaging)
             if pclass is not None:
                 packager = pclass()
-                packager.ingest(collection, id, fn, deposit.metadata_relevant)
+                derived_resources = packager.ingest(collection, id, fn, deposit.metadata_relevant)
+                
+                # a list of identifiers which will resolve to the derived resources
+                derived_resource_uris = self.get_derived_resource_uris(collection, id, derived_resources)
 
             # An identifier which will resolve to the package just deposited
             deposit_uri = self.um.part_uri(collection, id, fn)
@@ -2077,6 +2099,10 @@ class SWORDServer(object):
 
         # store the deposit receipt also
         self.dao.store_deposit_receipt(collection, id, receipt)
+        
+        # now augment the receipt with the details of this particular deposit
+        if deposit_uri is not None:
+            receipt = self.augmented_receipt(receipt, deposit_uri, derived_resource_uris)
 
         # finally, assemble the deposit response and return
         dr = DepositResponse()
@@ -2145,6 +2171,26 @@ class SWORDServer(object):
         self.dao.remove_container(collection, id)
         return DeleteResponse()
 
+    def get_derived_resource_uris(self, collection, id, derived_resource_names):
+        uris = []
+        for name in derived_resource_names:
+            uris.append(self.um.part_uri(collection, id, name))
+        return uris
+
+    def augmented_receipt(self, receipt, original_deposit_uri, derived_resource_uris=[]):
+        # Original Deposit
+        od = etree.SubElement(receipt, self.ns.ATOM + "link")
+        od.set("rel", "http://purl.org/net/sword/terms/originalDeposit")
+        od.set("href", original_deposit_uri)
+        
+        # Derived Resources
+        for uri in derived_resource_uris:
+            dr = etree.SubElement(receipt, self.ns.ATOM + "link")
+            dr.set("rel", "http://purl.org/net/sword/terms/derivedResource")
+            dr.set("href", uri)
+            
+        return etree.tostring(receipt, pretty_print=True)
+
     def deposit_receipt(self, collection, id, deposit, statement, metadata):
         """
         Construct a deposit receipt document for the provided URIs
@@ -2166,10 +2212,10 @@ class SWORDServer(object):
 
         # the EM-URI and SE-IRI
         em_uri = self.um.em_uri(collection, id)
-        se_uri = em_uri
 
         # the Edit-URI
         edit_uri = self.um.edit_uri(collection, id)
+        se_uri = edit_uri
 
         # the splash page URI
         splash_uri = self.um.html_url(collection, id)
@@ -2281,12 +2327,7 @@ class SWORDServer(object):
         state2.set("type", "application/rdf+xml")
         state2.set("href", ore_statement_uri)
 
-        # we no longer do this ....
-        # finally, embed the ORE version of the statemet
-        #xml = statement.get_rdf_xml()
-        #entry.append(xml)
-
-        return etree.tostring(entry, pretty_print=True)
+        return entry
 
     def get_statement(self, oid, content_type):
         collection, id = self.um.interpret_oid(oid)
@@ -2772,6 +2813,8 @@ class DAO(object):
     def store_deposit_receipt(self, collection, id, receipt):
         """ Store the supplied receipt document content in the object idenfied by the id in the specified collection """
         drfile = os.path.join(self.configuration.store_dir, collection, id, "sss_deposit-receipt.xml")
+        if not isinstance(receipt, str):
+            receipt = etree.tostring(receipt, pretty_print=True)
         self.save(drfile, receipt)
 
     def store_metadata(self, collection, id, metadata):
@@ -2828,7 +2871,7 @@ class DAO(object):
         odir = os.path.join(self.configuration.store_dir, collection, id)
         os.rmdir(odir)
 
-    def get_store_path(self, collection, id, filename):
+    def get_store_path(self, collection, id, filename=None):
         """
         Get the path to the specified filename in the store.  This is a utility method and should be used with care;
         all content which goes into the store through the store_content method will have its filename localised to
@@ -2836,8 +2879,9 @@ class DAO(object):
         internally to locate sss specific files in the container, and for packagers to write their own files into
         the store which are not part of the content itself.
         """
-        fpath = os.path.join(self.configuration.store_dir, collection, id, filename)
-        return fpath
+        if filename is not None:
+            return os.path.join(self.configuration.store_dir, collection, id, filename)
+        return os.path.join(self.configuration.store_dir, collection, id)
 
     def get_deposit_receipt_content(self, collection, id):
         """ Read the deposit receipt for the specified container """
@@ -2976,17 +3020,27 @@ class DefaultIngester(IngestPackager):
         self.ns = Namespaces()
         
     def ingest(self, collection, id, filename, metadata_relevant=True):
-        # for the time being this is just going to generate the metadata, it won't bother unpacking the zip
+        # First, let's just extract all the contents of the zip
+        z = ZipFile(self.dao.get_store_path(collection, id, filename))
+        
+        # keep track of the names of the files in the zip, as these will become
+        # our derived resources
+        derived_resources = z.namelist()
+        
+        # FIXME: what we do here is intrinsically insecure, but SSS is not a
+        # production service, so we're not worrying about it!
+        path = self.dao.get_store_path(collection, id)
+        z.extractall(path)
         
         # check for the atom document
         atom = self.dao.get_atom_content(collection, id)
         if atom is None:
             # there's no metadata to extract so just leave it
-            return
+            return derived_resources
 
         # if the metadata is not relevant, then we don't need to continue
         if not metadata_relevant:
-            return
+            return derived_resources
             
         metadata = {}
         entry = etree.fromstring(atom)
@@ -3020,6 +3074,8 @@ class DefaultIngester(IngestPackager):
 
         self.dao.store_metadata(collection, id, metadata)
         
+        return derived_resources
+        
     def a_insert(self, d, key, value):
         if d.has_key(key):
             vs = d[key]
@@ -3032,7 +3088,7 @@ class METSDSpaceIngester(IngestPackager):
     def ingest(self, collection, id, filename, metadata_relevant):
         # we don't need to implement this, it is just for example.  it would unzip the file and import the metadata
         # in the zip file
-        pass
+        return []
 
 class DefaultEntryIngester(object):
     def __init__(self):
