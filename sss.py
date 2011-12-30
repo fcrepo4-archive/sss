@@ -148,7 +148,7 @@ class Namespaces(object):
 # which reflect the short-hand terms used in the SWORD documentation (sd-uri, col-uri, cont-uri, em-uri and edit-uri
 #
 urls = (
-    '/', 'Index',                               # Home page, with an intro and some handy links
+    '/', 'WebUI',                               # Home page, with an intro and some handy links
     '/sd-uri', 'ServiceDocument',               # From which to retrieve the service document
     '/sd-uri/(.+)', 'ServiceDocument',          # for sub-service documents
     '/col-uri/(.+)', 'Collection',              # Representing a Collection as listed in the service document
@@ -936,9 +936,17 @@ class WebUI(SwordHttpHandler):
     """
     Class to provide a basic web interface to the store for convenience
     """
-    def GET(self, id):
-        ip = ItemPage()
-        return ip.get_item_page(id)
+    def GET(self, id=None):
+        if id is not None:
+            if id.find("/") >= 0:
+                ip = ItemPage()
+                return ip.get_item_page(id)
+            else:
+                cp = CollectionPage()
+                return cp.get_collection_page(id)
+        else:
+            hp = HomePage()
+            return hp.get_home_page()
 
 class Part(SwordHttpHandler):
     """
@@ -964,24 +972,6 @@ class Part(SwordHttpHandler):
         # implementing this when time permits
         web.ctx.status = "405 Method Not Allowed"
         return
-
-class Index():
-    """
-    Welcome / home page
-    """
-
-    def GET(self):
-        cfg = global_configuration
-    
-        return '<h1>Simple SWORDv2 Server</h1>' \
-               '<p>If prompted, use the username ' + cfg.user + ' and the password ' + cfg.password + '</p>' \
-               '<p>Handy links:</p>' \
-               '<ul>' \
-               '<li><a href="sd-uri">Service Document (SD-URI)</a> /sd-uri' \
-               '<ul><li><a href="sd-uri/foobar">Sub-service Document</a> /sd-uri/foobar</li></ul></li>' \
-               '<li><a href="col-uri/0619ec04-a5d2-4680-9b21-789284dc09f0">Collection as listed in the service document (COL-URI)</a> /col-uri/foobar</li>' \
-               '<li><a href="cont-uri/foobar">Media Resource Content - the URI used in atom:content@src (CONT-URI)</a> /cont-uri/foobar</li>' \
-               '</ul>'
 
 
 # CONTENT NEGOTIATION
@@ -2743,9 +2733,11 @@ class URIManager(object):
     def __init__(self):
         self.configuration = global_configuration
 
-    def html_url(self, collection, id):
+    def html_url(self, collection, id=None):
         """ The url for the HTML splash page of an object in the store """
-        return self.configuration.base_url + "html/" + collection + "/" + id
+        if id is not None:
+            return self.configuration.base_url + "html/" + collection + "/" + id
+        return self.configuration.base_url + "html/" + collection
 
     def sd_uri(self, sub=True):
         uri = self.configuration.base_url + "sd-uri"
@@ -2981,7 +2973,7 @@ class DAO(object):
         odir = os.path.join(self.configuration.store_dir, collection, id)
         os.rmdir(odir)
 
-    def get_store_path(self, collection, id, filename=None):
+    def get_store_path(self, collection, id=None, filename=None):
         """
         Get the path to the specified filename in the store.  This is a utility method and should be used with care;
         all content which goes into the store through the store_content method will have its filename localised to
@@ -2991,7 +2983,9 @@ class DAO(object):
         """
         if filename is not None:
             return os.path.join(self.configuration.store_dir, collection, id, filename)
-        return os.path.join(self.configuration.store_dir, collection, id)
+        if id is not None:
+            return os.path.join(self.configuration.store_dir, collection, id)
+        return os.path.join(self.configuration.store_dir, collection)
 
     def get_deposit_receipt_content(self, collection, id):
         """ Read the deposit receipt for the specified container """
@@ -3257,7 +3251,57 @@ class DefaultEntryIngester(object):
 # Basic Web Interface
 #######################################################################
 
-class ItemPage(object):
+class WebPage(object):
+    def _wrap_html(self, title, frag, head_frag=None):
+        return "<html><head><title>" + title + "</title>" + head_frag + "</head><body>" + frag + "</body></html>"
+
+class HomePage(WebPage):
+    """
+    Welcome / home page
+    """
+    def __init__(self):
+        self.dao = DAO()
+        self.um = URIManager()
+        
+    def get_home_page(self):
+        cfg = global_configuration
+        
+        frag = "<h1>Simple SWORDv2 Server</h1>"
+        frag += "<p><strong>Service Document (SD-IRI)</strong>: <a href=\"" + cfg.base_url + "sd-uri\">" + cfg.base_url + "sd-uri</a></p>"
+        frag += "<p>If prompted, use the username <strong>" + cfg.user + "</strong> and the password <strong>" + cfg.password + "</strong></p>"
+        frag += "<p>The On-Behalf-Of user to use is <strong>" + cfg.obo + "</strong></p>"
+        
+        # list the collections
+        frag += "<h2>Collections</h2><ul>"
+        for col in self.dao.get_collection_names():
+            frag += "<li><a href=\"" + self.um.html_url(col) + "\">" + col + "</a></li>"
+        frag += "</ul>"
+        
+        head_frag = "<link rel=\"http://purl.org/net/sword/discovery/service-document\" href=\"" + cfg.base_url + "sd-uri\"/>"
+        
+        return self._wrap_html("Simple SWORDv2 Server", frag, head_frag)
+
+class CollectionPage(WebPage):
+    def __init__(self):
+        self.dao = DAO()
+        self.um = URIManager()
+        
+    def get_collection_page(self, id):
+        frag = "<h1>Collection: " + id + "</h1>"
+        
+        # list all of the containers in the collection
+        cpath = self.dao.get_store_path(id)
+        containers = os.listdir(cpath)
+        frag += "<h2>Containers</h2><ul>"
+        for container in containers:
+            frag += "<li><a href=\"" + self.um.html_url(id, container) + "\">" + container + "</a></li>"
+        frag += "</ul>"
+        
+        head_frag = "<link rel=\"http://purl.org/net/sword/terms/deposit\" href=\"" + self.um.col_uri(id) + "\"/>"
+        
+        return self._wrap_html("Collection: " + id, frag, head_frag)
+
+class ItemPage(WebPage):
     def __init__(self):
         self.dao = DAO()
         self.um = URIManager()
@@ -3266,7 +3310,6 @@ class ItemPage(object):
         collection, id = self.um.interpret_oid(oid)
         statement = self.dao.load_statement(collection, id)
         metadata = self.dao.get_metadata(collection, id)
-        print metadata
         
         state_frag = self._get_state_frag(statement)
         md_frag = self._layout_metadata(metadata)
@@ -3275,7 +3318,12 @@ class ItemPage(object):
         frag = "<h1>Item: " + id + "</h1>"
         frag += "<strong>State</strong>: " + state_frag
         frag += self._layout_sections(md_frag, file_frag)
-        return self._wrap_html("Item: " + id, frag)
+        
+        head_frag = "<link rel=\"http://purl.org/net/sword/terms/edit\" href=\"" + self.um.edit_uri(collection, id) + "\"/>"
+        head_frag += "<link rel=\"http://purl.org/net/sword/terms/statement\" href=\"" + self.um.state_uri(collection, id, "atom") + "\"/>"
+        head_frag += "<link rel=\"http://purl.org/net/sword/terms/statement\" href=\"" + self.um.state_uri(collection, id, "ore") + "\"/>"
+        
+        return self._wrap_html("Item: " + id, frag, head_frag)
     
     def _layout_metadata(self, metadata):
         frag = "<h2>Metadata</h2>"
@@ -3302,9 +3350,6 @@ class ItemPage(object):
     
     def _layout_sections(self, metadata, files):
         return "<table border=\"0\"><tr><td valign=\"top\">" + metadata + "</td><td valign=\"top\">" + files + "</td></tr></table>"
-    
-    def _wrap_html(self, title, frag):
-        return "<html><head><title>" + title + "</title></head><body>" + frag + "</body></html>"
 
 # WEB SERVER
 #######################################################################
