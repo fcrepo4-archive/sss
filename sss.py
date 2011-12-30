@@ -89,7 +89,7 @@ class Configuration(object):
         self.error_content_package = "http://purl.org/net/sword/package/error"
 
         # we can turn off updates and deletes in order to examine the behaviour of Method Not Allowed errors
-        self.allow_update = False
+        self.allow_update = True
         self.allow_delete = True
 
         # we can turn off deposit receipts, which is allowed by the specification
