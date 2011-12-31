@@ -1754,6 +1754,10 @@ class SWORDServer(object):
 
             # now that we have stored the atom and the content, we can invoke a package ingester over the top to extract
             # all the metadata and any files we want
+            
+            # FIXME: because the deposit interpreter doesn't deal with multipart properly
+            # we don't get the correct packaging format here if the package is anything
+            # other than Binary
             packager = self.configuration.package_ingesters[deposit.packaging]()
             derived_resources = packager.ingest(collection, id, fn, deposit.metadata_relevant)
 
