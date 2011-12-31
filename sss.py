@@ -1791,6 +1791,7 @@ class SWORDServer(object):
         self.dao.store_deposit_receipt(collection, id, receipt)
 
         # now augment the receipt with the details of this particular deposit
+        # this handles None arguments, and converts the xml receipt into a string
         receipt = self.augmented_receipt(receipt, deposit_uri, derived_resource_uris)
         
         # finally, assemble the deposit response and return
@@ -1916,6 +1917,7 @@ class SWORDServer(object):
         self.dao.store_deposit_receipt(collection, id, receipt)
         
         # now augment the receipt with the details of this particular deposit
+        # this handles None arguments, and converts the xml receipt into a string
         receipt = self.augmented_receipt(receipt, deposit_uri, derived_resource_uris)
 
         # finally, assemble the deposit response and return
@@ -2050,8 +2052,8 @@ class SWORDServer(object):
         self.dao.store_deposit_receipt(collection, id, receipt)
         
         # now augment the receipt with the details of this particular deposit
-        if deposit_uri is not None:
-            receipt = self.augmented_receipt(receipt, deposit_uri)
+        # this handles None arguments, and converts the xml receipt into a string
+        receipt = self.augmented_receipt(receipt, deposit_uri)
 
         # finally, assemble the deposit response and return
         dr = DepositResponse()
@@ -2162,8 +2164,8 @@ class SWORDServer(object):
         self.dao.store_deposit_receipt(collection, id, receipt)
         
         # now augment the receipt with the details of this particular deposit
-        if deposit_uri is not None:
-            receipt = self.augmented_receipt(receipt, deposit_uri, derived_resource_uris)
+        # this handles None arguments, and converts the xml receipt into a string
+        receipt = self.augmented_receipt(receipt, deposit_uri, derived_resource_uris)
 
         # finally, assemble the deposit response and return
         dr = DepositResponse()
@@ -2240,15 +2242,17 @@ class SWORDServer(object):
 
     def augmented_receipt(self, receipt, original_deposit_uri, derived_resource_uris=[]):
         # Original Deposit
-        od = etree.SubElement(receipt, self.ns.ATOM + "link")
-        od.set("rel", "http://purl.org/net/sword/terms/originalDeposit")
-        od.set("href", original_deposit_uri)
+        if original_deposit_uri is not None:
+            od = etree.SubElement(receipt, self.ns.ATOM + "link")
+            od.set("rel", "http://purl.org/net/sword/terms/originalDeposit")
+            od.set("href", original_deposit_uri)
         
         # Derived Resources
-        for uri in derived_resource_uris:
-            dr = etree.SubElement(receipt, self.ns.ATOM + "link")
-            dr.set("rel", "http://purl.org/net/sword/terms/derivedResource")
-            dr.set("href", uri)
+        if derived_resource_uris is not None:
+            for uri in derived_resource_uris:
+                dr = etree.SubElement(receipt, self.ns.ATOM + "link")
+                dr.set("rel", "http://purl.org/net/sword/terms/derivedResource")
+                dr.set("href", uri)
             
         return etree.tostring(receipt, pretty_print=True)
 
