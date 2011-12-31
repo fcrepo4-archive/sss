@@ -77,8 +77,8 @@ class Configuration(object):
         # Supported package format ingesters; for the Packaging header (dictionary key), the associated class will
         # be used to unpackage deposited content
         self.package_ingesters = {
-                "http://purl.org/net/sword/package/Binary" : DefaultIngester,
-                "http://purl.org/net/sword/package/SimpleZip" : DefaultIngester,
+                "http://purl.org/net/sword/package/Binary" : BinaryIngester,
+                "http://purl.org/net/sword/package/SimpleZip" : SimpleZipIngester,
                 "http://purl.org/net/sword/package/METSDSpaceSIP" : METSDSpaceIngester
             }
             
@@ -1841,7 +1841,7 @@ class SWORDServer(object):
         mr.filepath = packager.package(collection, id)
 
         return mr
-
+    
     def replace(self, oid, deposit):
         """
         Replace all the content represented by the supplied id with the supplied deposit
@@ -1860,35 +1860,35 @@ class SWORDServer(object):
         # does the object directory exist?  If not, we can't do a deposit
         if not self.exists(oid):
             return None
-
+                
         # first figure out what to do about the metadata
         keep_atom = False
         if deposit.atom is not None:
-            self.update_metadata(oid, deposit)
+            entry_ingester = self.configuration.entry_ingester()
+            entry_ingester.ingest(collection, id, deposit.atom)
             keep_atom = True
-            # if this is atom only, then we are finished just by updating
-            # the metadata
-            if deposit.content is None:
-                return
+            
+        deposit_uri = None
+        derived_resource_uris = []
+        if deposit.content is not None:
+            # remove all the old files before adding the new.  We always leave
+            # behind the metadata; this will be overwritten later if necessary
+            self.dao.remove_content(collection, id, True, keep_atom)
 
-        # remove all the old files before adding the new.  We always leave
-        # behind the metadata; this will be overwritten later if necessary
-        self.dao.remove_content(collection, id, True, keep_atom)
+            # store the content file
+            fn = self.dao.store_content(collection, id, deposit.content, deposit.filename)
 
-        # store the content file
-        fn = self.dao.store_content(collection, id, deposit.content, deposit.filename)
-
-        # now that we have stored the atom and the content, we can invoke a package ingester over the top to extract
-        # all the metadata and any files we want.  Notice that we pass in the metadata_relevant flag, so the
-        # packager won't overwrite the existing metadata if it isn't supposed to
-        packager = self.configuration.package_ingesters[deposit.packaging]()
-        derived_resources = packager.ingest(collection, id, fn, deposit.metadata_relevant)
+            # now that we have stored the atom and the content, we can invoke a package ingester over the top to extract
+            # all the metadata and any files we want.  Notice that we pass in the metadata_relevant flag, so the
+            # packager won't overwrite the existing metadata if it isn't supposed to
+            packager = self.configuration.package_ingesters[deposit.packaging]()
+            derived_resources = packager.ingest(collection, id, fn, deposit.metadata_relevant)
         
-        # a list of identifiers which will resolve to the derived resources
-        derived_resource_uris = self.get_derived_resource_uris(collection, id, derived_resources)
+            # a list of identifiers which will resolve to the derived resources
+            derived_resource_uris = self.get_derived_resource_uris(collection, id, derived_resources)
 
-        # An identifier which will resolve to the package just deposited
-        deposit_uri = self.um.part_uri(collection, id, fn)
+            # An identifier which will resolve to the package just deposited
+            deposit_uri = self.um.part_uri(collection, id, fn)
 
         # the aggregation uri
         agg_uri = self.um.agg_uri(collection, id)
@@ -1900,9 +1900,10 @@ class SWORDServer(object):
         s = Statement()
         s.aggregation_uri = agg_uri
         s.rem_uri = edit_uri
-        by = deposit.auth.by if deposit.auth is not None else None
-        obo = deposit.auth.obo if deposit.auth is not None else None
-        s.original_deposit(deposit_uri, datetime.now(), deposit.packaging, by, obo)
+        if deposit_uri is not None:
+            by = deposit.auth.by if deposit.auth is not None else None
+            obo = deposit.auth.obo if deposit.auth is not None else None
+            s.original_deposit(deposit_uri, datetime.now(), deposit.packaging, by, obo)
         s.in_progress = deposit.in_progress
         s.aggregates = derived_resource_uris
 
@@ -2175,39 +2176,6 @@ class SWORDServer(object):
         # spec is INCORRECT for 6.7.3 (also, section 9.3, which comes into play here
         # also says use the edit-uri)
         dr.location = self.um.edit_uri(collection, id) 
-        dr.created = True
-        return dr
-
-    def update_metadata(self, oid, deposit):
-        # check for standard possible errors, and throw if appropriate
-        er = self.check_mediated_error(deposit)
-        if er is not None:
-            return er
-
-        collection, id = self.um.interpret_oid(oid)
-
-        # does the collection directory exist?  If not, we can't do a deposit
-        if not self.exists(oid):
-            return None
-
-        # now just store the atom file
-        if deposit.atom is not None:
-            entry_ingester = self.configuration.entry_ingester()
-            entry_ingester.ingest(collection, id, deposit.atom)
-        
-        # load the statement
-        s = self.dao.load_statement(collection, id)
-
-        # create the deposit receipt (which involves getting hold of the item's metadata first if it exists
-        metadata = self.dao.get_metadata(collection, id)
-        receipt = self.deposit_receipt(collection, id, deposit, s, metadata)
-
-        # store the deposit receipt also
-        self.dao.store_deposit_receipt(collection, id, receipt)
-
-        # finally, assemble the deposit response and return
-        dr = DepositResponse()
-        dr.receipt = receipt
         dr.created = True
         return dr
 
@@ -3120,9 +3088,14 @@ class IngestPackager(object):
         may need to be inspected, and this can be retrieved from DAO.get_atom_content().  If the metadata_relevant
         argument is False, implementations should not change the already extracted metadata in the container
         """
-        pass
+        return []
 
-class DefaultIngester(IngestPackager):
+class BinaryIngester(IngestPackager):
+    def ingest(self, collection, id, filename, metadata_relevant):
+        # does nothing, we don't try to unpack binary deposits
+        return []
+
+class SimpleZipIngester(IngestPackager):
     def __init__(self):
         self.dao = DAO()
         self.ns = Namespaces()
