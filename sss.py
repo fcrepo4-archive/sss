@@ -33,6 +33,10 @@ class Configuration(object):
         # The directory where the deposited content should be stored
         self.store_dir = os.path.join(os.getcwd(), "store")
 
+        # explicitly set the sword version, so if you're testing validation of
+        # service documents you can "break" it.
+        self.sword_version = "2.0" # SWORD 2.0!  Oh yes!
+    
         # user details; the user/password pair should be used for HTTP Basic Authentication, and the obo is the user
         # to use for On-Behalf-Of requests.  Set authenticate=False if you want to test the server without caring
         # about authentication, set mediation=False if you want to test the server's errors on invalid attempts at
@@ -48,6 +52,13 @@ class Configuration(object):
         self.app_accept = ["*/*"]
         self.multipart_accept = ["*/*"]
         self.accept_nothing = False
+        
+        # use these app_accept and multipart_accept values to create an invalid Service Document
+        self.app_accept = None
+        self.multipart_accept = None
+
+        # should we provide sub-service urls
+        self.use_sub = True
 
         # What packaging formats should the sword:acceptPackaging element in the Service Document support
         # The tuple is the URI of the format and your desired "q" value
@@ -238,7 +249,7 @@ class ServiceDocument(SwordHttpHandler):
         # if we get here authentication was successful and we carry on (we don't care who authenticated)
         ss = SWORDServer()
         web.header("Content-Type", "text/xml")
-        use_sub = True if sub is None else False
+        use_sub = global_configuration.use_sub if sub is None else False
         return ss.service_document(use_sub)
 
 class Collection(SwordHttpHandler):
@@ -807,7 +818,12 @@ class Container(SwordHttpHandler):
         if result is None:
             # we couldn't find the id
             return web.notfound()
-            
+        
+        # NOTE: spec says 201 Created for multipart and 200 Ok for metadata only
+        # we have implemented 200 OK across the board, in the understanding that
+        # in this case the spec is incorrect (correction need to be implemented
+        # asap)
+        
         # created, accepted or error
         if result.created:
             web.header("Content-Type", "application/atom+xml;type=entry")
@@ -1634,7 +1650,7 @@ class SWORDServer(object):
 
         # version element
         version = etree.SubElement(service, self.ns.SWORD + "version")
-        version.text = "2.0" # SWORD 2.0!  Oh yes!
+        version.text = self.configuration.sword_version
 
         # max upload size
         mus = etree.SubElement(service, self.ns.SWORD + "maxUploadSize")
@@ -1658,14 +1674,16 @@ class SWORDServer(object):
 
             if not self.configuration.accept_nothing:
                 # accepts declaration
-                for acc in self.configuration.app_accept:
-                    accepts = etree.SubElement(collection, self.ns.APP + "accept")
-                    accepts.text = acc
-
-                for acc in self.configuration.multipart_accept:
-                    mraccepts = etree.SubElement(collection, self.ns.APP + "accept")
-                    mraccepts.text = acc
-                    mraccepts.set("alternate", "multipart-related")
+                if self.configuration.app_accept is not None:
+                    for acc in self.configuration.app_accept:
+                        accepts = etree.SubElement(collection, self.ns.APP + "accept")
+                        accepts.text = acc
+                
+                if self.configuration.multipart_accept is not None:
+                    for acc in self.configuration.multipart_accept:
+                        mraccepts = etree.SubElement(collection, self.ns.APP + "accept")
+                        mraccepts.text = acc
+                        mraccepts.set("alternate", "multipart-related")
             else:
                 accepts = etree.SubElement(collection, self.ns.APP + "accept")
 
