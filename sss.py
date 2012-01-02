@@ -4,7 +4,7 @@ __version__ = "0.1"
 __author__ = ["Richard Jones <richard@oneoverzero.com>"]
 __license__ = "public domain"
 
-import web, uuid, os, re, base64, hashlib, urllib, sys
+import web, uuid, os, re, base64, hashlib, urllib, sys, logging, logging.config
 from lxml import etree
 from datetime import datetime
 from zipfile import ZipFile
@@ -22,6 +22,45 @@ if ssl:
     CherryPyWSGIServer.ssl_certificate = "./ssl/cacert.pem"
     CherryPyWSGIServer.ssl_private_key = "./ssl/privkey.pem"
 
+class SSSLogger(object):
+    def __init__(self):
+        self.logging_config = "./sword2_logging.conf"  # default
+        self.basic_config = """[loggers]
+keys=root
+
+[handlers]
+keys=consoleHandler
+
+[formatters]
+keys=basicFormatting
+
+[logger_root]
+level=INFO
+handlers=consoleHandler
+
+[handler_consoleHandler]
+class=StreamHandler
+level=DEBUG
+formatter=basicFormatting
+args=(sys.stdout,)
+
+[formatter_basicFormatting]
+format=%(asctime)s - %(name)s - %(levelname)s - %(message)s
+"""
+
+        if not os.path.isfile(self.logging_config):
+            self.create_logging_config(self.logging_config)
+
+        logging.config.fileConfig(self.logging_config)
+
+    def create_logging_config(self, pathtologgingconf):
+        fn = open(pathtologgingconf, "w")
+        fn.write(self.basic_config)
+        fn.close()
+        
+    def getLogger(self):
+        return logging.getLogger(__name__)
+        
 class Configuration(object):
     def __init__(self):
         # The base url of the webservice where SSS is deployed
@@ -54,14 +93,13 @@ class Configuration(object):
         self.accept_nothing = False
         
         # use these app_accept and multipart_accept values to create an invalid Service Document
-        self.app_accept = None
-        self.multipart_accept = None
+        #self.app_accept = None
+        #self.multipart_accept = None
 
         # should we provide sub-service urls
         self.use_sub = True
 
         # What packaging formats should the sword:acceptPackaging element in the Service Document support
-        # The tuple is the URI of the format and your desired "q" value
         self.sword_accept_package = [
                 "http://purl.org/net/sword/package/SimpleZip",
                 "http://purl.org/net/sword/package/Binary",
@@ -191,10 +229,10 @@ class SwordHttpHandler(object):
 
         # we may have turned authentication off for development purposes
         if not cfg.authenticate:
-            print cfg.rid + " Authentication is turned OFF"
+            ssslog.info("Authentication is turned OFF")
             return Auth(cfg.user)
         else:
-        	print cfg.rid + " Authentication required"
+            ssslog.info("Authentication required")
 
         # if we want to authenticate, but there is no auth string then bounce with a 401 (realm SSS)
         if auth is None:
@@ -1359,6 +1397,7 @@ class SWORDRequest(object):
         here is the web.py format which is all upper case, preceeding with HTTP_ with all - converted to _
         (for some unknown reason)
         """
+        ssslog.debug("Setting Header %s : %s" % (key, value))
         if key == "HTTP_ON_BEHALF_OF":
             self.on_behalf_of = value
         elif key == "HTTP_PACKAGING":
@@ -1548,13 +1587,17 @@ class SWORDSpec(object):
             if head in self.sword_headers:
                 d.set_by_header(head, dict[head])
             if head == "HTTP_CONTENT_DISPOSITION":
+                ssslog.debug("Reading Header %s : %s" % (head, dict[head]))
                 d.filename = self.extract_filename(dict[head])
+                ssslog.debug("Extracted filename %s from %s" % (d.filename, dict[head]))
             if head == "CONTENT_TYPE":
+                ssslog.debug("Reading Header %s : %s" % (head, dict[head]))
                 ct = dict[head]
                 d.content_type = ct
                 if ct.startswith("application/atom+xml"):
                     atom_only = True
             if head == "CONTENT_LENGTH":
+                ssslog.debug("Reading Header %s : %s" % (head, dict[head]))
                 if dict[head] == "0":
                     empty_request = True
                 cl = int(dict[head]) # content length as an integer
@@ -3354,7 +3397,12 @@ class ItemPage(WebPage):
 #######################################################################
 # This is the bit which actually invokes the web.py server when this module is run
 
+# create the global configuration
 global_configuration = CherryPyConfiguration()
+
+# get the global logger
+sssl = SSSLogger()
+ssslog = sssl.getLogger()
 
 # if we run the file as a mod_wsgi module, do this
 application = web.application(urls, globals()).wsgifunc()
