@@ -236,7 +236,7 @@ class SwordHttpHandler(object):
 
         # if we want to authenticate, but there is no auth string then bounce with a 401 (realm SSS)
         if auth is None:
-            print cfg.rid + " No authentication credentials supplied, requesting authentication"
+            ssslog.info("No authentication credentials supplied, requesting authentication")
             web.header('WWW-Authenticate','Basic realm="SSS"')
             web.ctx.status = '401 Unauthorized'
             return Auth()
@@ -244,18 +244,17 @@ class SwordHttpHandler(object):
             # assuming Basic authentication, get the username and password
             auth = re.sub('^Basic ','',auth)
             username, password = base64.decodestring(auth).split(':')
-
-            print cfg.rid + " Authentication details: " + str(username) + ":" + str(password) + "/" + str(obo)
+            ssslog.info("Authentication details: " + str(username) + ":" + str(password) + "; On Behalf Of: " + str(obo))
 
             # if the username and password don't match, bounce the user with a 401
             # meanwhile if the obo header has been passed but doesn't match the config value also bounce
             # witha 401 (I know this is an odd looking if/else but it's for clarity of what's going on
             if username != cfg.user or password != cfg.password:
-                print cfg.rid + " Authentication Failed; returning 401"
+                ssslog.info("Authentication Failed; returning 401")
                 web.ctx.status = '401 Unauthorized'
                 return Auth()
             elif obo is not None and obo != cfg.obo:
-                print cfg.rid + " Authentication Failed with Target Owner Unknown"
+                ssslog.info("Authentication Failed with Target Owner Unknown")
                 # we throw a sword error for TargetOwnerUnknown
                 return Auth(cfg.user, obo, target_owner_unknown=True)
 
@@ -2138,6 +2137,8 @@ class SWORDServer(object):
         # by the time this is called, we should already know that we can return this type, so there is no need for
         # any checking, we just get on with it
 
+        ssslog.info("Container requested in mime format: " + content_type.mimetype())
+
         # ok, so break the id down into collection and object
         collection, id = self.um.interpret_oid(oid)
 
@@ -2149,6 +2150,7 @@ class SWORDServer(object):
         elif content_type.mimetype() == "application/atom+xml;type=feed":
             return self.dao.get_statement_feed(collection, id)
         else:
+            ssslog.info("Requested mimetype not recognised/supported: " + content_type.mimetype())
             return None
 
     def deposit_existing(self, oid, deposit):
