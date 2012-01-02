@@ -1581,7 +1581,7 @@ class SWORDSpec(object):
 
         # get the headers that have been provided.  Any headers which have not been provided have default values
         # supplied in the DepositRequest object's constructor
-        print dict
+        ssslog.debug("Incoming HTTP headers: " + str(dict))
         empty_request = False
         for head in dict.keys():
             if head in self.sword_headers:
@@ -1605,22 +1605,21 @@ class SWORDSpec(object):
                     d.too_large = True
                     return d
 
-        # FIXME: do we need to read web.data() in an parse it with the email.mime library to do this properly?
-        # print web.data()
-        
         # first we need to find out if this is a multipart or not
         webin = web.input()
         if len(webin) == 2:
+            ssslog.info("Received multipart deposit request")
             d.atom = webin['atom']
-            # FIXME: we know that due to the way that the multipart works, this is a base64 encoded string, which
-            # does not equal a ZIP file.  Have to come back to this and figure out what is best to do
+            # read the zip file from the base64 encoded string
             d.content = base64.decodestring(webin['payload'])
         elif not empty_request:
             # if this wasn't a multipart, and isn't an empty request, then the data is in web.data().  This could be a binary deposit or
             # an atom entry deposit - reply on the passed/determined argument to determine which
             if atom_only:
+                ssslog.info("Received Entry deposit request")
                 d.atom = web.data()
             else:
+                ssslog.info("Received Binary deposit request")
                 d.content = web.data()
 
         # now just attach the authentication data and return
@@ -3279,6 +3278,8 @@ class DefaultEntryIngester(object):
                 key = element.tag[len(self.ns.DC):]
                 val = element.text.strip()
                 self.a_insert(metadata, key, val)
+
+        ssslog.debug("Current Metadata (extracted + previously existing): " + str(metadata))
 
         self.dao.store_metadata(collection, id, metadata)
 
