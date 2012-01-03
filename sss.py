@@ -1435,7 +1435,7 @@ class SWORDRequest(object):
         ssslog.debug("Setting Header %s : %s" % (key, value))
         if key == "HTTP_ON_BEHALF_OF":
             self.on_behalf_of = value
-        elif key == "HTTP_PACKAGING":
+        elif key == "HTTP_PACKAGING" and value is not None:
             self.packaging = value
         elif key == "HTTP_IN_PROGRESS":
             self.in_progress = (value.strip() == "true")
@@ -2045,6 +2045,8 @@ class SWORDServer(object):
         - delete:   The DeleteRequest object
         Return a DeleteResponse containing the Deposit Receipt or the SWORD Error
         """
+        ssslog.info("Deleting content of resource " + oid)
+        
         # check for standard possible errors, and throw if appropriate
         er = self.check_delete_errors(delete)
         if er is not None:
@@ -2096,6 +2098,8 @@ class SWORDServer(object):
         -deposit:       the DepositRequest object to be processed
         Returns a DepositResponse object which will contain the Deposit Receipt or a SWORD Error
         """
+        ssslog.info("Adding content to media resource of container " + oid)
+        
         # check for standard possible errors, and throw if appropriate
         er = self.check_deposit_errors(deposit)
         if er is not None:
@@ -2112,16 +2116,19 @@ class SWORDServer(object):
         s.in_progress = deposit.in_progress
         
         # store the content file if one exists, and do some processing on it
+        location_uri = None
         deposit_uri = None
+        derived_resource_uris = []
         if deposit.content is not None:
+            ssslog.debug("Add request contains content part")
+            
             fn = self.dao.store_content(collection, id, deposit.content, deposit.filename)
-            
-            # NOTE: we don't do any unpacking as SSS assumes that added content like this is
-            # a plain binary file (so the Location header we will return will be the Part URI)
-            
-            # NOTE: therefore, metadata relevance is not employed by the simple sword server
-            # in this instance, but should be considered by other implementations
-            
+            ssslog.debug("New incoming file stored with filename " + fn)
+                
+            packager = self.configuration.package_ingesters[deposit.packaging]()
+            derived_resources = packager.ingest(collection, id, fn, deposit.metadata_relevant)
+            ssslog.debug("Resources derived from deposit: " + str(derived_resources))
+
             # An identifier which will resolve to the package just deposited
             deposit_uri = self.um.part_uri(collection, id, fn)
             
@@ -2129,28 +2136,16 @@ class SWORDServer(object):
             obo = deposit.auth.obo if deposit.auth is not None else None
             s.original_deposit(deposit_uri, datetime.now(), deposit.packaging, by, obo)
             
-            # since there is no unpacking, there are no derived resources, so 
-            # no need to add any further aggregations to the statement
-
-        # NOTE: all this was wrong - it was creating a new statement from
-        # scratch, when it should have been adding to an existing one ...
-        #
-        # the aggregation uri
-        # agg_uri = self.um.agg_uri(collection, id)
-
-        # the Edit-URI
-        # edit_uri = self.um.edit_uri(collection, id)
-
-        # create the initial statement
-        #s = Statement()
-        #s.aggregation_uri = agg_uri
-        #s.rem_uri = edit_uri
-        #by = deposit.auth.by if deposit.auth is not None else None
-        #obo = deposit.auth.obo if deposit.auth is not None else None
-        #if deposit_uri is not None:
-        #    s.original_deposit(deposit_uri, datetime.now(), deposit.packaging, by, obo)
-        #s.in_progress = deposit.in_progress
-
+            # a list of identifiers which will resolve to the derived resources
+            derived_resource_uris = self.get_derived_resource_uris(collection, id, derived_resources)
+            
+            # decide on the location URI (it differs depending on whether this was
+            # an unpackable resource or not
+            if deposit.packaging == "http://purl.org/net/sword/package/Binary":
+                location_uri = deposit_uri
+            else:
+                location_uri = self.um.em_uri(collection, id)
+        
         # store the statement by itself
         self.dao.store_statement(collection, id, s)
 
@@ -2163,12 +2158,12 @@ class SWORDServer(object):
         
         # now augment the receipt with the details of this particular deposit
         # this handles None arguments, and converts the xml receipt into a string
-        receipt = self.augmented_receipt(receipt, deposit_uri)
+        receipt = self.augmented_receipt(receipt, deposit_uri, derived_resource_uris)
 
         # finally, assemble the deposit response and return
         dr = DepositResponse()
         dr.receipt = receipt
-        dr.location = deposit_uri
+        dr.location = location_uri
         dr.created = True
         return dr
 
