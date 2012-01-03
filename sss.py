@@ -269,7 +269,7 @@ class ServiceDocument(SwordHttpHandler):
     """
     def GET(self, sub=None):
         """ GET the service document - returns an XML document """
-        print global_configuration.rid + " GET on Service Document"
+        ssslog.debug("GET on Service Document; Incoming HTTP headers: " + str(web.ctx.environ))
         
         # authenticate
         auth = self.authenticate(web)
@@ -300,7 +300,7 @@ class Collection(SwordHttpHandler):
         - collection:   The ID of the collection as specified in the requested URL
         Returns an XML document with some metadata about the collection and the contents of that collection
         """
-        print global_configuration.rid + " GET on Collection: list collection contents"
+        ssslog.debug("GET on Collection (list collection contents); Incoming HTTP headers: " + str(web.ctx.environ))
         
         # authenticate
         auth = self.authenticate(web)
@@ -326,7 +326,7 @@ class Collection(SwordHttpHandler):
         - collection:   The ID of the collection as specified in the requested URL
         Returns a Deposit Receipt
         """
-        print global_configuration.rid + " POST to Collection: create new item"
+        ssslog.debug("POST to Collection (create new item); Incoming HTTP headers: " + str(web.ctx.environ))
         
         # authenticate
         auth = self.authenticate(web)
@@ -398,6 +398,9 @@ class MediaResourceContent(SwordHttpHandler):
         - id:   the ID of the object in the store
         Returns the content in the requested format
         """
+        
+        ssslog.debug("GET on MediaResourceContent; Incoming HTTP headers: " + str(web.ctx.environ))
+        
         # check to see if we're after the .atom version of the content
         atom = False
         if id.endswith(".atom"):
@@ -407,6 +410,7 @@ class MediaResourceContent(SwordHttpHandler):
         # NOTE: this method is not authenticated - we imagine sharing this URL with end-users who will just want
         # to retrieve the content.  It's only for the purposes of example, anyway
         ss = SWORDServer()
+        spec = SWORDSpec()
 
         # first thing we need to do is check that there is an object to return, because otherwise we may throw a
         # 415 Unsupported Media Type without looking first to see if there is even any media to content negotiate for
@@ -420,8 +424,9 @@ class MediaResourceContent(SwordHttpHandler):
             cn = ContentNegotiator()
 
             # if no Accept header, then we will get this back
-            cn.default_type = "text"
-            cn.default_subtype = "html"
+            cn.default_type = "application"
+            cn.default_subtype = "zip"
+            cn.default_packaging = None
 
             # The list of acceptable formats (in order of preference).
             # FIXME: ultimately to replace this with the negotiator
@@ -439,8 +444,10 @@ class MediaResourceContent(SwordHttpHandler):
 
         # did we successfully negotiate a content type?
         if content_type is None:
+            error = ss.sword_error(spec.error_content_uri, "Requsted Accept-Packaging is not supported by this server")
+            web.header("Content-Type", "text/xml")
             web.ctx.status = "406 Not Acceptable"
-            return
+            return error
         
         # if we did, we can get hold of the media resource
         media_resource = ss.get_media_resource(id, content_type)
@@ -450,6 +457,8 @@ class MediaResourceContent(SwordHttpHandler):
             return web.found(media_resource.url)
         else:
             web.header("Content-Type", content_type.mimetype())
+            if media_resource.packaging is not None:
+                web.header("Packaging", media_resource.packaging)
             f = open(media_resource.filepath, "r")
             web.ctx.status = "200 OK"
             return f.read()
@@ -468,6 +477,8 @@ class MediaResource(MediaResourceContent):
         - id:   the ID of the media resource as specified in the URL
         Returns a Deposit Receipt
         """
+        ssslog.debug("PUT on Media Resource (replace); Incoming HTTP headers: " + str(web.ctx.environ))
+        
         # find out if update is allowed
         cfg = global_configuration
         if not cfg.allow_update:
@@ -537,6 +548,8 @@ class MediaResource(MediaResourceContent):
         - id:   the ID of the object to have its content removed as per the requested URI
         Return a Deposit Receipt
         """
+        ssslog.debug("DELETE on Media Resource (remove content, leave container); Incoming HTTP headers: " + str(web.ctx.environ))
+        
         # find out if delete is allowed
         cfg = global_configuration
         if not cfg.allow_delete:
@@ -597,6 +610,8 @@ class MediaResource(MediaResourceContent):
         - id:   The ID of the media resource as specified in the requested URL
         Returns a Deposit Receipt
         """
+        ssslog.debug("POST to Media Resource (add new file); Incoming HTTP headers: " + str(web.ctx.environ))
+        
         # find out if update is allowed
         cfg = global_configuration
         if not cfg.allow_update:
@@ -678,6 +693,8 @@ class Container(SwordHttpHandler):
         Returns a representation of the container: SSS will return either the Atom Entry identical to the one supplied
         as a deposit receipt or the pure RDF/XML Statement depending on the Accept header
         """
+        ssslog.debug("GET on Container (retrieve deposit receipt or statement); Incoming HTTP headers: " + str(web.ctx.environ))
+        
         # authenticate
         auth = self.authenticate(web)
         if not auth.success():
@@ -706,6 +723,7 @@ class Container(SwordHttpHandler):
         cn.default_type = "application"
         cn.default_subtype = "atom+xml"
         cn.default_params = "type=entry"
+        cn.default_packaging = None
 
         # The list of acceptable formats (in order of preference).  The tuples list the type and
         # the parameters section respectively
@@ -732,6 +750,8 @@ class Container(SwordHttpHandler):
         PUT a new Entry over the existing entry, or a multipart request over
         both the existing metadata and the existing content
         """
+        ssslog.debug("PUT on Container (replace); Incoming HTTP headers: " + str(web.ctx.environ))
+        
         # find out if update is allowed
         cfg = global_configuration
         if not cfg.allow_update:
@@ -809,6 +829,8 @@ class Container(SwordHttpHandler):
         - id:    The ID of the container as contained in the URL
         Returns a Deposit Receipt
         """
+        ssslog.debug("POST to Container (add new content and metadata); Incoming HTTP headers: " + str(web.ctx.environ))
+        
         # find out if update is allowed
         cfg = global_configuration
         if not cfg.allow_update:
@@ -882,6 +904,8 @@ class Container(SwordHttpHandler):
         - id:   the ID of the container
         Returns nothing, as there is nothing to return (204 No Content)
         """
+        ssslog.debug("DELETE on Container (remove); Incoming HTTP headers: " + str(web.ctx.environ))
+        
         # find out if update is allowed
         cfg = global_configuration
         if not cfg.allow_delete:
@@ -936,6 +960,8 @@ class Container(SwordHttpHandler):
 
 class StatementHandler(SwordHttpHandler):
     def GET(self, id):
+        ssslog.debug("GET on Statement (retrieve); Incoming HTTP headers: " + str(web.ctx.environ))
+        
         # authenticate
         auth = self.authenticate(web)
         if not auth.success():
@@ -1327,28 +1353,38 @@ class ContentNegotiator(object):
         Returns either the preferred ContentType as per the settings of the object, or None if no agreement could be
         reached
         """
+        ssslog.debug("Fallback parameters are Accept: " + str(self.default_type) + "/" + str(self.default_subtype) + 
+                        ";" + str(self.default_params) + " and Accept-Packaging: " + str(self.default_packaging))
+        
         # get the accept header if available
         accept = self.get_accept(dict)
         packaging = self.get_packaging(dict)
-        print "Accept Header: " + str(accept)
-        print "Packaging: "+ str(packaging)
+        ssslog.debug("Accept Header: " + str(accept))
+        ssslog.debug("Packaging: "+ str(packaging))
+
+        if accept is None and packaging is None:
+            # if it is not available just return the defaults
+            return ContentType(self.default_type, self.default_subtype, self.default_params, self.default_packaging)
 
         if packaging is None:
             packaging = self.default_packaging
-
+        
         if accept is None:
-            # if it is not available just return the defaults
-            return ContentType(self.default_type, self.default_subtype, self.default_params, packaging)
-
+            accept = self.default_type + "/" + self.default_subtype
+            if self.default_params is not None:
+                accept += ";" + self.default_params
+        
+        ssslog.debug("Negotiating on Accept: " + str(accept) + " and Accept-Packaging: " + str(packaging))
+        
         # get us back a dictionary keyed by q value which tells us the order of preference that the client has
         # requested
         analysed = self.analyse_accept(accept, packaging)
 
-        print "Analysed Accept: " + str(analysed)
+        ssslog.debug("Analysed Accept: " + str(analysed))
 
         # go through the analysed formats and cross reference them with the acceptable formats
         content_type = self.get_acceptable(analysed, self.acceptable)
-        print "Accepted: " + str(content_type)
+        ssslog.debug("Accepted: " + str(content_type))
 
         # return the acceptable content type.  If this is None (which get_acceptable can return), then the caller
         # will know that we failed to negotiate a type and should 415 the client
@@ -1465,6 +1501,7 @@ class MediaResourceResponse(object):
         self.redirect = False
         self.url = None
         self.filepath = None
+        self.packaging = None
 
 class DeleteRequest(SWORDRequest):
     """
@@ -1886,6 +1923,8 @@ class SWORDServer(object):
         # by the time this is called, we should already know that we can return this type, so there is no need for
         # any checking, we just get on with it
 
+        ssslog.info("Request media type with media format: " + content_type.media_format())
+
         # ok, so break the id down into collection and object
         collection, id = self.um.interpret_oid(oid)
 
@@ -1895,6 +1934,7 @@ class SWORDServer(object):
         # if the type/subtype is text/html, then we need to do a redirect.  This is equivalent to redirecting the
         # client to the splash page of the item on the server
         if content_type.mimetype() == "text/html":
+            ssslog.info("Requested format is text/html ... redirecting client to web ui")
             mr.redirect = True
             mr.url = self.um.html_url(collection, id)
             return mr
@@ -1902,6 +1942,7 @@ class SWORDServer(object):
         # call the appropriate packager, and get back the filepath for the response
         packager = self.configuration.package_disseminators[content_type.media_format()]()
         mr.filepath = packager.package(collection, id)
+        mr.packaging = packager.get_uri()
 
         return mr
     
@@ -3084,6 +3125,9 @@ class DisseminationPackager(object):
         so that it can be served back to the client
         """
         pass
+        
+    def get_uri(self):
+        return "http://purl.org/net/sword/package/SimpleZip"
 
 class DefaultDisseminator(DisseminationPackager):
     """
@@ -3145,6 +3189,9 @@ class FeedDisseminator(DisseminationPackager):
         f.close()
         
         return fpath
+        
+    def get_uri(self):
+        return None
 
 class IngestPackager(object):
     def ingest(self, collection, id, filename, metadata_relevant):
