@@ -531,11 +531,11 @@ class MediaResource(MediaResourceContent):
 
         # created, accepted or error
         if result.created:
-            print cfg.rid + " Content replaced"
+            ssslog.info("Content replaced")
             web.ctx.status = "204 No Content" # notice that this is different from the POST as per AtomPub
             return
         else:
-            print cfg.rid + " Returning Error"
+            ssslog.info("Returning Error")
             web.header("Content-Type", "text/xml")
             web.ctx.status = result.error_code
             return result.error
@@ -1968,6 +1968,7 @@ class SWORDServer(object):
         # first figure out what to do about the metadata
         keep_atom = False
         if deposit.atom is not None:
+            ssslog.info("Replace request has ATOM part - updating")
             entry_ingester = self.configuration.entry_ingester()
             entry_ingester.ingest(collection, id, deposit.atom)
             keep_atom = True
@@ -1975,18 +1976,22 @@ class SWORDServer(object):
         deposit_uri = None
         derived_resource_uris = []
         if deposit.content is not None:
+            ssslog.info("Replace request has file content - updating")
+            
             # remove all the old files before adding the new.  We always leave
             # behind the metadata; this will be overwritten later if necessary
             self.dao.remove_content(collection, id, True, keep_atom)
 
             # store the content file
             fn = self.dao.store_content(collection, id, deposit.content, deposit.filename)
+            ssslog.debug("New incoming file stored with filename " + fn)
 
             # now that we have stored the atom and the content, we can invoke a package ingester over the top to extract
             # all the metadata and any files we want.  Notice that we pass in the metadata_relevant flag, so the
             # packager won't overwrite the existing metadata if it isn't supposed to
             packager = self.configuration.package_ingesters[deposit.packaging]()
             derived_resources = packager.ingest(collection, id, fn, deposit.metadata_relevant)
+            ssslog.debug("Resources derived from deposit: " + str(derived_resources))
         
             # a list of identifiers which will resolve to the derived resources
             derived_resource_uris = self.get_derived_resource_uris(collection, id, derived_resources)
@@ -3290,6 +3295,8 @@ class DefaultEntryIngester(object):
         self.ns = Namespaces()
         
     def ingest(self, collection, id, atom, additive=False):
+        ssslog.debug("Ingesting Metadata; Additive? " + str(additive))
+        
         # store the atom
         self.dao.store_atom(collection, id, atom)
         
@@ -3298,6 +3305,8 @@ class DefaultEntryIngester(object):
         if additive:
             # start with any existing metadata
             metadata = self.dao.get_metadata(collection, id)
+        
+        ssslog.debug("Existing Metadata (before new ingest): " + str(metadata))
         
         entry = etree.fromstring(atom)
 
