@@ -885,10 +885,10 @@ class Container(SwordHttpHandler):
         
         # created, accepted or error
         if result.created:
-            web.header("Content-Type", "application/atom+xml;type=entry")
             web.header("Location", result.location)
             web.ctx.status = "200 OK"
             if cfg.return_deposit_receipt:
+                web.header("Content-Type", "application/atom+xml;type=entry")
                 return result.receipt
             else:
                 return
