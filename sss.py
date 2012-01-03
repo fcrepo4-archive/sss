@@ -2202,6 +2202,8 @@ class SWORDServer(object):
         -deposit:   The DepositRequest object
         Returns a DepositResponse containing the Deposit Receipt or a SWORD Error
         """
+        ssslog.debug("Deposit onto an existing container " + oid)
+        
         # check for standard possible errors, and throw if appropriate
         er = self.check_deposit_errors(deposit)
         if er is not None:
@@ -2223,6 +2225,8 @@ class SWORDServer(object):
         # now just store the atom file and the content (this may overwrite an existing atom document - this is
         # intentional, although real servers would augment the existing metadata rather than overwrite)
         if deposit.atom is not None:
+            ssslog.info("Append request has ATOM part - adding")
+            
             # when we ingest the atom file, the existing atom doc may get overwritten,
             # but the spec requires that we only add metadata, not overwrite anything
             # (if possible).  For a purist implementation, then, we mark additive=True
@@ -2235,7 +2239,10 @@ class SWORDServer(object):
         deposit_uri = None
         derived_resource_uris = []
         if deposit.content is not None:
+            ssslog.info("Append request has file content - adding to media resource")
+            
             fn = self.dao.store_content(collection, id, deposit.content, deposit.filename)
+            ssslog.debug("New incoming file stored with filename " + fn)
 
             # now that we have stored the atom and the content, we can invoke a package ingester over the top to extract
             # all the metadata and any files we want.  Notice that we pass in the metadata_relevant flag, so the packager
@@ -2244,6 +2251,7 @@ class SWORDServer(object):
             if pclass is not None:
                 packager = pclass()
                 derived_resources = packager.ingest(collection, id, fn, deposit.metadata_relevant)
+                ssslog.debug("Resources derived from deposit: " + str(derived_resources))
                 
                 # a list of identifiers which will resolve to the derived resources
                 derived_resource_uris = self.get_derived_resource_uris(collection, id, derived_resources)
