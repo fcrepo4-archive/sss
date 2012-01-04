@@ -2222,6 +2222,10 @@ class SWORDServer(object):
         # just be telling us that the client has finished working on this item
         s.in_progress = deposit.in_progress
         
+        # just do some useful logging
+        if deposit.atom is None and deposit.content is None:
+            ssslog.info("Empty deposit request; therefore this is just completing a previously incomplete deposit")
+        
         # now just store the atom file and the content (this may overwrite an existing atom document - this is
         # intentional, although real servers would augment the existing metadata rather than overwrite)
         if deposit.atom is not None:
