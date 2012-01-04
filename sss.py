@@ -1570,8 +1570,6 @@ class SWORDSpec(object):
         # there must be both an "atom" and "payload" input or data in web.data()
         webin = web.input()
         if len(webin) != 2 and len(webin) > 0:
-            print webin.keys()
-            print webin
             return "Multipart request does not contain exactly 2 parts"
         if len(webin) >= 2 and not webin.has_key("atom") and not webin.has_key("payload"):
             return "Multipart request must contain Content-Dispositions with names 'atom' and 'payload'"
